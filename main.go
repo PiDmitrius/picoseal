@@ -1,8 +1,8 @@
 // picoseal seals secrets into libsodium sealed boxes (crypto_box_seal). The
 // binary carries no key material and is safe to copy; the private key and the
 // records are protected by file permissions alone, so only root reads a secret
-// and jobs an administrator has pinned are the only way an unprivileged caller
-// reaches one. Never pin picoseal itself: open with a name of the caller's
+// and scripts an administrator has pinned are the only way an unprivileged
+// caller reaches one. Never pin picoseal itself: open with a name of the caller's
 // choosing is the key.
 package main
 
@@ -76,9 +76,10 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `picoseal — sealed secrets for fixed admin jobs
+	fmt.Fprintf(os.Stderr, `picoseal — sealed secrets for root scripts
 
-  install          Create %s, the key if there is none, and %s
+  install          Create %s with secrets/ and scripts/, the key if there is
+                   none, and %s
   add <name>       Seal stdin under <name>: one unechoed line from a terminal,
                    under %d bytes, or a whole pipe, up to %d bytes counting the
                    one trailing newline it strips
@@ -125,6 +126,9 @@ func cmdInstall(args []string) error {
 		return errUsage
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
 		return err
 	}
 	if err := os.Chmod(dir, 0o755); err != nil {

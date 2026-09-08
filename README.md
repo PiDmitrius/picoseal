@@ -7,9 +7,9 @@ sudoers.
 
     sudo ./picoseal install
 
-Creates `/etc/picoseal` with `secrets/` inside, generates the key if there is
-none, and copies the binary to `/usr/local/bin`. Running it again keeps the
-existing key.
+Creates `/etc/picoseal` with `secrets/` and `scripts/` inside, generates the key
+if there is none, and copies the binary to `/usr/local/bin`. Running it again
+keeps the existing key.
 
 ## Commands
 
@@ -43,7 +43,7 @@ process's arguments are readable by every user on the machine.
 Pin that script in sudoers, never `picoseal` itself — `open` with a name of the
 caller's choosing is the key:
 
-    <user> ALL=(root) NOPASSWD: /etc/picoseal/jobs.d/projects ""
+    <user> ALL=(root) NOPASSWD: /etc/picoseal/scripts/projects ""
 
 The `""` forbids arguments, so the caller cannot steer the script. Keep the
 script and every directory above it root-owned and not writable by the caller.
