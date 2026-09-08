@@ -38,14 +38,17 @@ into its own variable so `set -e` catches a failure:
 
     #!/bin/sh
     set -eu
-    RESTIC_PASSWORD=$(picoseal open restic)
-    export RESTIC_PASSWORD
-    exec /usr/bin/restic -r /srv/backup backup /etc
+    GITLAB_TOKEN=$(picoseal open gitlab)
+    printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_TOKEN" |
+        curl -sS --config - https://<gitlab>/api/v4/projects
+
+The token goes to `curl` through its stdin config, not through `-H`: a
+process's arguments are readable by every user on the machine.
 
 Pin that script in sudoers, never `picoseal` itself — `open` with a name of the
 caller's choosing is the key:
 
-    <user> ALL=(root) NOPASSWD: /etc/picoseal/jobs.d/backup ""
+    <user> ALL=(root) NOPASSWD: /etc/picoseal/jobs.d/projects ""
 
 The `""` forbids arguments, so the caller cannot steer the script. Keep the
 script and every directory above it root-owned and not writable by the caller.
