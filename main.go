@@ -27,7 +27,6 @@ import (
 )
 
 const (
-	version = "v0.1.0"
 	// maxValue caps a piped secret; a terminal line is capped by the canonical
 	// buffer of the tty driver, which discards the rest without telling anyone.
 	maxValue    = 64 << 10
@@ -70,7 +69,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `picoseal %s — sealed secrets for fixed admin jobs
+	fmt.Fprintf(os.Stderr, `picoseal — sealed secrets for fixed admin jobs
 
 Unprivileged:
   wrap                        Seal a secret to stdout: one unechoed line from a
@@ -79,13 +78,13 @@ Unprivileged:
 
 Private key holder only:
   keygen                      Create the key pair in %s
-  open <file>                 Print the secret (refuses a terminal)
-  env NAME=<file> [...] -- /abs/cmd [args]
+  open </abs/record>          Print the secret (refuses a terminal)
+  env NAME=</abs/record> [...] -- /abs/cmd [args]
                               Run cmd with the secrets in its environment
 
 A record is one line of unpadded base64url. Every open is logged to syslog as
 authpriv.notice.
-`, version, maxTerminal, maxValue, keyDirPath)
+`, maxTerminal, maxValue, keyDirPath)
 }
 
 func keyPath() string { return filepath.Join(keyDirPath, "key") }
@@ -236,6 +235,9 @@ func readSecret() ([]byte, error) {
 }
 
 func unseal(path string) ([]byte, error) {
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("%s: record must be an absolute path", path)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -281,7 +283,7 @@ func cmdEnv(args []string) error {
 	for len(args) > 0 && args[0] != "--" {
 		name, path, found := strings.Cut(args[0], "=")
 		if !found || !nameRe.MatchString(name) {
-			return fmt.Errorf("bad assignment %q: expected NAME=<file>", args[0])
+			return fmt.Errorf("bad assignment %q: expected NAME=</abs/record>", args[0])
 		}
 		bindings = append(bindings, [2]string{name, path})
 		args = args[1:]

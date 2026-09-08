@@ -85,6 +85,13 @@ func TestOversizedSecretIsRefused(t *testing.T) {
 	}
 }
 
+func TestRelativeRecordPathIsRefused(t *testing.T) {
+	keygen(t)
+	if _, err := unseal("record"); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("a relative record path must be refused: %v", err)
+	}
+}
+
 func TestRecordFromAnotherKey(t *testing.T) {
 	first := keygen(t)
 	record := filepath.Join(first, "record")
