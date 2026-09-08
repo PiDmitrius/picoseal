@@ -1,29 +1,7 @@
 # picoseal
 
-Sealed secrets for fixed admin jobs. Only root adds and opens a secret; an
-unprivileged caller reaches one only by running a job an administrator has
-pinned in sudoers.
-
-The binary holds no key material — the private key and the records are
-protected by file permissions.
-
-## Boundary
-
-picoseal makes sense only where the consuming principal cannot become root:
-not in `sudo`, `docker` or `disk`, holding no NOPASSWD rule wider than the
-pinned jobs, and unable to write to `/etc/sudoers.d`. A principal with any of
-those reads the private key directly, and the scheme is decorative.
-
-Never pin `picoseal` itself. A caller who can reach `open` with a name of their
-choosing holds the key, whatever the argument pattern looks like. Pin jobs.
-
-What it protects: a copy of the records that leaves the machine without the
-key, and any process confined to the user's uid.
-
-What it does not protect: whoever may run a job uses the secret through it
-without ever reading it, so a job must be an operation whose result does not
-reveal the secret. A secret handed to its consumer is out of reach from that
-moment on. Losing `key` makes every record unreadable.
+Secrets sealed on disk, opened only by root, used by scripts you pin in
+sudoers.
 
 ## Install
 
@@ -33,20 +11,30 @@ Creates `/etc/picoseal` with `secrets/` inside, generates the key if there is
 none, and copies the binary to `/usr/local/bin`. Running it again keeps the
 existing key.
 
-## Use
+## Commands
 
-    sudo picoseal add restic          # prompts, does not echo
-    sudo picoseal list
-    sudo picoseal open restic         # prints the secret
-    sudo picoseal remove restic
+    picoseal install          Create the directory, the key and /usr/local/bin/picoseal
+    picoseal add <name>       Seal stdin under <name>
+    picoseal open <name>      Print the secret
+    picoseal list             List names
+    picoseal remove <name>    Delete a secret
+    picoseal --dir <path> ... Use another directory instead of /etc/picoseal
 
-`add` refuses to replace an existing name; rotate with `remove` then `add`. A
-secret longer than one terminal line comes from a pipe, up to 64 KiB, with one
-trailing newline stripped — a value that must end in `0x0A` has to be encoded
-first.
+`add` reads one unechoed line from a terminal, under 4095 bytes, or a whole
+pipe, up to 64 KiB, with one trailing newline stripped. It refuses to replace
+an existing name: rotate with `remove` then `add`.
 
-A job is a root script in `/etc/picoseal/jobs.d` that never prints the secret.
-Read it into a variable of its own, so `set -e` catches a failure:
+`open` writes the secret to stdout and logs the uid, the caller sudo reported,
+the name and the result to syslog as `authpriv.notice`. If syslog cannot be
+reached it releases nothing.
+
+Everything but `install` reads the private key `/etc/picoseal/key`, so in
+practice everything but `install` is root.
+
+## Letting other users use a secret
+
+Write a script that uses the secret without printing it, and read the secret
+into its own variable so `set -e` catches a failure:
 
     #!/bin/sh
     set -eu
@@ -54,21 +42,10 @@ Read it into a variable of its own, so `set -e` catches a failure:
     export RESTIC_PASSWORD
     exec /usr/bin/restic -r /srv/backup backup /etc
 
-Jobs must ignore their arguments and call tools by absolute path. The script and
-every parent directory must be root-owned and not writable by the caller. Pin
-the job with no arguments, or the caller chooses them:
+Pin that script in sudoers, never `picoseal` itself — `open` with a name of the
+caller's choosing is the key:
 
     <user> ALL=(root) NOPASSWD: /etc/picoseal/jobs.d/backup ""
 
-## Audit
-
-Every open goes to syslog as `authpriv.notice` with the uid, the caller sudo
-reported, the name and the result — next to sudo's own record of the job. The
-text of an entry proves nothing by itself: any local process can send a line
-with the same tag. Trust the receiver's metadata — `_UID` and `_PID` in the
-journal — and sudo's record. Secrets never reach the log, and if syslog cannot
-be reached picoseal refuses to release the secret.
-
-## Not included
-
-Key rotation, a daemon, network access, names or metadata inside a record.
+The `""` forbids arguments, so the caller cannot steer the script. Keep the
+script and every directory above it root-owned and not writable by the caller.
