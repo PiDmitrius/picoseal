@@ -174,8 +174,19 @@ func writeNew(path, data string) error {
 	}
 	if err != nil {
 		os.Remove(path)
+		return err
 	}
-	return err
+	return fsyncDir(filepath.Dir(path))
+}
+
+// fsyncDir makes the new directory entry durable, not just the bytes in it.
+func fsyncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func installBinary() error {
