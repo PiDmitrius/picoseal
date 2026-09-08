@@ -37,8 +37,8 @@ into its own variable so `set -e` catches a failure:
     printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_TOKEN" |
         curl -sS --config - https://<gitlab>/api/v4/projects
 
-The token goes to `curl` through its stdin config, not through `-H`: a
-process's arguments are readable by every user on the machine.
+Not `-H`: that would put the token in the process arguments, which every user
+on the machine can read.
 
 Pin that script in sudoers, never `picoseal` itself — `open` with a name of the
 caller's choosing is the key:
