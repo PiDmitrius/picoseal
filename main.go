@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/syslog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -83,7 +82,7 @@ func usage() {
   add <name>       Seal stdin under <name>: one unechoed line from a terminal,
                    under %d bytes, or a whole pipe, up to %d bytes counting the
                    one trailing newline it strips
-  open <name>      Print the secret, logging it to syslog as authpriv.notice
+  open <name>      Print the secret
   list             List names
   remove <name>    Delete a secret
 
@@ -119,24 +118,6 @@ func keys() (pub, priv *[32]byte, err error) {
 	}
 	copy(public[:], derived)
 	return &public, &secret, nil
-}
-
-// audit fails closed: a release nobody can account for must not happen.
-func audit(name string, err error) error {
-	result := "ok"
-	if err != nil {
-		result = "error"
-	}
-	w, logErr := syslog.New(syslog.LOG_AUTHPRIV|syslog.LOG_NOTICE, "picoseal")
-	if logErr != nil {
-		return fmt.Errorf("audit unavailable: %w", logErr)
-	}
-	defer w.Close()
-	line := fmt.Sprintf("uid=%d caller=%q secret=%q result=%s", os.Getuid(), os.Getenv("SUDO_USER"), name, result)
-	if logErr := w.Notice(line); logErr != nil {
-		return fmt.Errorf("audit unavailable: %w", logErr)
-	}
-	return err
 }
 
 func cmdInstall(args []string) error {
@@ -281,7 +262,7 @@ func cmdOpen(args []string) error {
 		return errUsage
 	}
 	value, err := unseal(args[0])
-	if err := audit(args[0], err); err != nil {
+	if err != nil {
 		return err
 	}
 	_, err = os.Stdout.Write(value)

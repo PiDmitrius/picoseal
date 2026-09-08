@@ -24,10 +24,6 @@ existing key.
 pipe, up to 65536 bytes counting the one trailing newline it strips. It refuses
 to replace an existing name: rotate with `remove` then `add`.
 
-`open` writes the secret to stdout and logs the uid, the caller sudo reported,
-the name and the result to syslog as `authpriv.notice`. If syslog cannot be
-reached it releases nothing.
-
 Everything but `install` reads the private key `/etc/picoseal/key`, so in
 practice everything but `install` is root.
 
