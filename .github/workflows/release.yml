@@ -26,9 +26,8 @@ jobs:
           mkdir -p release
 
           for arch in amd64 arm64; do
-            name=picoseal-${{ github.ref_name }}-linux-$arch
-            GOARCH=$arch go build -trimpath -ldflags="-s -w" -o release/$name .
-            sha256sum release/$name > release/$name.sha256
+            GOARCH=$arch go build -trimpath -ldflags="-s -w" \
+              -o release/picoseal-${{ github.ref_name }}-linux-$arch .
           done
 
       - name: Publish
