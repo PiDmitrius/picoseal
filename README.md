@@ -21,8 +21,8 @@ existing key.
     picoseal --dir <path> ... Use another directory instead of /etc/picoseal
 
 `add` reads one unechoed line from a terminal, under 4095 bytes, or a whole
-pipe, up to 64 KiB, with one trailing newline stripped. It refuses to replace
-an existing name: rotate with `remove` then `add`.
+pipe, up to 65536 bytes counting the one trailing newline it strips. It refuses
+to replace an existing name: rotate with `remove` then `add`.
 
 `open` writes the secret to stdout and logs the uid, the caller sudo reported,
 the name and the result to syslog as `authpriv.notice`. If syslog cannot be

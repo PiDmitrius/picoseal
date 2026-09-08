@@ -80,9 +80,9 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `picoseal — sealed secrets for fixed admin jobs
 
   install          Create %s, the key if there is none, and %s
-  add <name>       Seal stdin under <name>: one unechoed line from a terminal
-                   (under %d bytes), or a pipe as it is, up to %d bytes, with
-                   one trailing newline stripped
+  add <name>       Seal stdin under <name>: one unechoed line from a terminal,
+                   under %d bytes, or a whole pipe, up to %d bytes counting the
+                   one trailing newline it strips
   open <name>      Print the secret, logging it to syslog as authpriv.notice
   list             List names
   remove <name>    Delete a secret
@@ -156,14 +156,19 @@ func cmdInstall(args []string) error {
 }
 
 func ensureKey() error {
-	if _, err := os.Stat(keyPath()); !errors.Is(err, os.ErrNotExist) {
+	f, err := os.OpenFile(keyPath(), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
+	defer f.Close()
 	_, secret, err := box.GenerateKey(rand.Reader)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(keyPath(), []byte(base64.RawURLEncoding.EncodeToString(secret[:])+"\n"), 0o600); err != nil {
+	if _, err := io.WriteString(f, base64.RawURLEncoding.EncodeToString(secret[:])+"\n"); err != nil {
 		return err
 	}
 	fmt.Printf("key created in %s\n", dir)
