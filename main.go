@@ -88,7 +88,7 @@ func usage() {
 
   --dir <path>     Use another directory instead of %s
 
-Everything but install needs root.
+All commands need root.
 `, dir, binPath, maxTerminal, maxValue, dir)
 }
 

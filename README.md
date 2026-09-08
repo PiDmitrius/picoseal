@@ -24,7 +24,7 @@ existing key.
 pipe, up to 65536 bytes counting the one trailing newline it strips. It refuses
 to replace an existing name: rotate with `remove` then `add`.
 
-Everything but `install` needs root.
+All commands need root.
 
 ## Letting other users use a secret
 
