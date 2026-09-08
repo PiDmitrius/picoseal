@@ -166,6 +166,9 @@ func writeNew(path, data string) error {
 		return err
 	}
 	_, err = io.WriteString(f, data)
+	if err == nil {
+		err = f.Sync()
+	}
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
