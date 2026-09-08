@@ -88,7 +88,7 @@ func usage() {
 
   --dir <path>     Use another directory instead of %s
 
-Everything but install needs the private key, so in practice root.
+Everything but install needs root.
 `, dir, binPath, maxTerminal, maxValue, dir)
 }
 
