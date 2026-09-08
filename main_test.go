@@ -7,22 +7,23 @@ import (
 	"testing"
 )
 
-func keygen(t *testing.T) string {
+func install(t *testing.T) {
 	t.Helper()
-	previous := keyDirPath
-	keyDirPath = t.TempDir()
-	t.Cleanup(func() { keyDirPath = previous })
-	if err := cmdKeygen(nil); err != nil {
+	previous := dir
+	dir = t.TempDir()
+	t.Cleanup(func() { dir = previous })
+	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return keyDirPath
+	if err := ensureKey(); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func wrapTo(t *testing.T, value, path string) {
+func add(t *testing.T, name, value string) error {
 	t.Helper()
-	stdin, stdout := os.Stdin, os.Stdout
-	defer func() { os.Stdin, os.Stdout = stdin, stdout }()
-
+	stdin := os.Stdin
+	defer func() { os.Stdin = stdin }()
 	in, err := os.CreateTemp(t.TempDir(), "in")
 	if err != nil {
 		t.Fatal(err)
@@ -33,24 +34,17 @@ func wrapTo(t *testing.T, value, path string) {
 	if _, err := in.Seek(0, 0); err != nil {
 		t.Fatal(err)
 	}
-	out, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer out.Close()
-	os.Stdin, os.Stdout = in, out
-	if err := cmdWrap(nil); err != nil {
-		t.Fatal(err)
-	}
+	os.Stdin = in
+	return cmdAdd([]string{name})
 }
 
 func TestRoundTrip(t *testing.T) {
-	dir := keygen(t)
+	install(t)
 	const secret = "line1\nline2 $with `chars`"
-	record := filepath.Join(dir, "record")
-	wrapTo(t, secret+"\n", record)
-
-	got, err := unseal(record)
+	if err := add(t, "brave", secret+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := unseal("brave")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,77 +53,51 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
-func TestOversizedSecretIsRefused(t *testing.T) {
-	dir := keygen(t)
-	oversized := make([]byte, maxValue+1)
-	for i := range oversized {
-		oversized[i] = 'A'
+func TestAddKeepsAnExistingSecret(t *testing.T) {
+	install(t)
+	if err := add(t, "brave", "first"); err != nil {
+		t.Fatal(err)
 	}
-	oversized[maxValue] = '\n'
+	if err := add(t, "brave", "second"); err == nil {
+		t.Fatal("add must refuse to replace a secret")
+	}
+	got, err := unseal("brave")
+	if err != nil || string(got) != "first" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}
 
-	stdin := os.Stdin
-	defer func() { os.Stdin = stdin }()
-	in, err := os.CreateTemp(dir, "in")
+func TestNamesStayInsideTheStore(t *testing.T) {
+	install(t)
+	for _, name := range []string{"..", ".", "../key", "a/b", "Brave", ""} {
+		if _, err := secretPath(name); err == nil {
+			t.Fatalf("%q must be refused", name)
+		}
+	}
+}
+
+func TestOversizedSecretIsRefused(t *testing.T) {
+	install(t)
+	oversized := strings.Repeat("A", maxValue) + "\n" + "lost tail"
+	if err := add(t, "big", oversized); err == nil {
+		t.Fatal("an oversized secret must be refused, not truncated")
+	}
+}
+
+func TestSecretFromAnotherKey(t *testing.T) {
+	install(t)
+	if err := add(t, "brave", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	record, err := os.ReadFile(filepath.Join(dir, "secrets", "brave"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := in.Write(append(oversized, []byte("lost tail")...)); err != nil {
+	install(t)
+	if err := os.WriteFile(filepath.Join(dir, "secrets", "brave"), record, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := in.Seek(0, 0); err != nil {
-		t.Fatal(err)
-	}
-	os.Stdin = in
-	if _, err := readSecret(); err == nil {
-		t.Fatal("expected an oversized secret to be refused, not truncated")
-	}
-}
-
-func TestRecordFromAnotherKey(t *testing.T) {
-	first := keygen(t)
-	record := filepath.Join(first, "record")
-	wrapTo(t, "secret", record)
-
-	keygen(t)
-	if _, err := unseal(record); err == nil {
-		t.Fatal("expected a record sealed for another key to fail")
-	}
-}
-
-func TestShortRecordIsNotAKeyMismatch(t *testing.T) {
-	dir := keygen(t)
-	record := filepath.Join(dir, "empty")
-	if err := os.WriteFile(record, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := unseal(record)
-	if err == nil || !strings.Contains(err.Error(), "not a picoseal record") {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestEnvArguments(t *testing.T) {
-	for _, args := range [][]string{
-		nil,
-		{"--", "/bin/true"},
-		{"T=/tmp/record"},
-		{"T=/tmp/record", "--"},
-		{"bad name=/tmp/record", "--", "/bin/true"},
-		{"T", "--", "/bin/true"},
-	} {
-		if err := cmdEnv(args); err == nil {
-			t.Fatalf("%v: expected an error", args)
-		}
-	}
-	err := cmdEnv([]string{"T=/nonexistent", "--", "true"})
-	if err == nil || !strings.Contains(err.Error(), "absolute") {
-		t.Fatalf("a relative command must be refused: %v", err)
-	}
-}
-
-func TestWithoutDropsStaleEntries(t *testing.T) {
-	got := without([]string{"T=old", "OTHER=x", "T=older"}, "T")
-	if len(got) != 1 || got[0] != "OTHER=x" {
-		t.Fatalf("got %v", got)
+	if _, err := unseal("brave"); err == nil {
+		t.Fatal("a record sealed for another key must fail")
 	}
 }
