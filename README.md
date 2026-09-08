@@ -28,8 +28,8 @@ All commands need root.
 
 ## Letting other users use a secret
 
-Write a script that uses the secret without printing it, and read the secret
-into its own variable so `set -e` catches a failure:
+Write a script in `/etc/picoseal/scripts` that uses the secret without printing
+it, and read the secret into its own variable so `set -e` catches a failure:
 
     #!/bin/sh
     set -eu
@@ -40,8 +40,8 @@ into its own variable so `set -e` catches a failure:
 Not `-H`: that would put the token in the process arguments, which every user
 on the machine can read.
 
-Pin that script in sudoers, never `picoseal` itself — `open` with a name of the
-caller's choosing is the key:
+Pin that script in sudoers, never `picoseal` itself — a caller who picks the
+name can open every secret:
 
     <user> ALL=(root) NOPASSWD: /etc/picoseal/scripts/projects ""
 

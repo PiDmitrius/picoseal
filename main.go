@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/nacl/box"
@@ -31,10 +30,11 @@ const (
 	maxValue    = 64 << 10
 	maxTerminal = 4095
 	binPath     = "/usr/local/bin/picoseal"
+	defaultDir  = "/etc/picoseal"
 )
 
 var (
-	dir      = "/etc/picoseal"
+	dir      = defaultDir
 	nameRe   = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 	errUsage = errors.New("usage")
 )
@@ -90,7 +90,7 @@ func usage() {
   --dir <path>     Use another directory instead of %s
 
 All commands need root.
-`, dir, binPath, maxTerminal, maxValue, dir)
+`, dir, binPath, maxTerminal, maxValue, defaultDir)
 }
 
 func keyPath() string { return filepath.Join(dir, "key") }
@@ -131,6 +131,9 @@ func cmdInstall(args []string) error {
 	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
 		return err
 	}
+	if err := os.Chmod(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		return err
+	}
 	if err := os.Chmod(dir, 0o755); err != nil {
 		return err
 	}
@@ -141,23 +144,35 @@ func cmdInstall(args []string) error {
 }
 
 func ensureKey() error {
-	f, err := os.OpenFile(keyPath(), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	_, secret, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	err = writeNew(keyPath(), base64.RawURLEncoding.EncodeToString(secret[:])+"\n")
 	if errors.Is(err, os.ErrExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, secret, err := box.GenerateKey(rand.Reader)
+	fmt.Printf("key created in %s\n", dir)
+	return nil
+}
+
+// writeNew creates path or leaves nothing behind.
+func writeNew(path, data string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := io.WriteString(f, base64.RawURLEncoding.EncodeToString(secret[:])+"\n"); err != nil {
-		return err
+	_, err = io.WriteString(f, data)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
 	}
-	fmt.Printf("key created in %s\n", dir)
-	return nil
+	if err != nil {
+		os.Remove(path)
+	}
+	return err
 }
 
 func installBinary() error {
@@ -206,14 +221,10 @@ func cmdAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	record := base64.RawURLEncoding.EncodeToString(sealed) + "\n"
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
+	if err := writeNew(path, base64.RawURLEncoding.EncodeToString(sealed)+"\n"); err != nil {
 		return fmt.Errorf("%s not stored: %w", args[0], err)
 	}
-	defer f.Close()
-	_, err = io.WriteString(f, record)
-	return err
+	return nil
 }
 
 // readSecret takes the secret off a pipe as it is, and off a terminal without
@@ -240,7 +251,7 @@ func readSecret() ([]byte, error) {
 	restore := func() { _ = unix.IoctlSetTermios(fd, unix.TCSETSF, termios) }
 	defer restore()
 	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(interrupt, os.Interrupt, unix.SIGTERM)
 	defer signal.Stop(interrupt)
 	go func() {
 		<-interrupt
@@ -256,7 +267,7 @@ func readSecret() ([]byte, error) {
 	}
 	line = strings.TrimRight(line, "\r\n")
 	if len(line) >= maxTerminal {
-		return nil, fmt.Errorf("a terminal drops anything past %d bytes; pipe longer secrets", maxTerminal)
+		return nil, fmt.Errorf("a terminal line of %d bytes or more may be cut; pipe it instead", maxTerminal)
 	}
 	return []byte(line), nil
 }
@@ -306,7 +317,9 @@ func cmdList(args []string) error {
 		return err
 	}
 	for _, entry := range entries {
-		fmt.Println(entry.Name())
+		if _, err := fmt.Println(entry.Name()); err != nil {
+			return err
+		}
 	}
 	return nil
 }
