@@ -43,6 +43,11 @@ and are delivered again after it.
     picoseal export <pubkey> < token > gitlab.rec         # anywhere, no root
     sudo picoseal import < gitlab.rec | sudo picoseal add gitlab   # target
 
+`seal.html` does what `export` does in a browser, offline and self-contained:
+paste the public key and the secret, then copy the record. Open it as a local
+file or from a server you trust over https; a page served over plain http from
+elsewhere can be rewritten on the way.
+
 The session key changes on every reboot, so take a fresh `pubkey` over a channel
 that authenticates the host, such as ssh; a key swapped on the way hands the
 secret to whoever swapped it. A record opens only in the session it was sealed
