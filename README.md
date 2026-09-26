@@ -15,6 +15,9 @@ keeps the existing key.
 
     picoseal install          Create the directory, the key and /usr/local/bin/picoseal
     picoseal add <name>       Seal stdin under <name>
+    picoseal export <pubkey>  Seal stdin for the host with <pubkey> and print the record
+    picoseal import           Print the secret in a record on stdin
+    picoseal pubkey           Print the public key
     picoseal open <name>      Print the secret
     picoseal list             List names
     picoseal remove <name>    Delete a secret
@@ -22,9 +25,38 @@ keeps the existing key.
 
 `add` reads one unechoed line from a terminal, under 4095 bytes, or a whole
 pipe, up to 65536 bytes counting the one trailing newline it strips. It refuses
-to replace an existing name: rotate with `remove` then `add`.
+to replace an existing name: rotate with `remove` then `add`. `export` reads
+stdin the same way.
 
-All commands need root.
+`add` and `open` keep secrets in the store; `export` and `import` seal and open
+a stream for one host without touching any store.
+
+All commands but `export` need root.
+
+## Sealing for another host
+
+The public key is not secret; hand it to whoever should deliver a secret:
+
+    sudo picoseal pubkey
+
+Anyone with it seals a record on any machine, without root and without the
+private key, and the target opens it into a file or its own store:
+
+    picoseal export <pubkey> < token > gitlab.rec
+    sudo picoseal import < gitlab.rec | sudo picoseal add gitlab
+
+A record is itself a stream, so records nest: seal for the inner host first,
+then for the outer one, and each host opens its own layer:
+
+    picoseal export <inner-pubkey> < token | picoseal export <outer-pubkey> > outer.rec
+    sudo picoseal import < outer.rec > inner.rec         # outer host
+    sudo picoseal import < inner.rec | sudo picoseal add gitlab   # inner host
+
+Each layer grows the record by about a third, and `export` takes at most
+65536 bytes.
+
+A record carries no sender identity: anyone with the public key can make one,
+so accept records only over a channel you trust.
 
 ## Letting other users use a secret
 

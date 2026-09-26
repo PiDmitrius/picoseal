@@ -3,7 +3,8 @@
 // records are protected by file permissions alone, so only root reads a secret
 // and scripts an administrator has pinned are the only way an unprivileged
 // caller reaches one. Never pin picoseal itself: open with a name of the caller's
-// choosing is the key.
+// choosing is the key. The public key is not secret: export seals a record for
+// any host from its pubkey output, without root.
 package main
 
 import (
@@ -29,6 +30,7 @@ const (
 	// buffer of the tty driver, which discards the rest without telling anyone.
 	maxValue    = 64 << 10
 	maxTerminal = 4095
+	maxRecord   = (maxValue+box.AnonymousOverhead+2)/3*4 + 1
 	binPath     = "/usr/local/bin/picoseal"
 	defaultDir  = "/etc/picoseal"
 )
@@ -55,6 +57,12 @@ func main() {
 		err = cmdInstall(args[1:])
 	case "add":
 		err = cmdAdd(args[1:])
+	case "import":
+		err = cmdImport(args[1:])
+	case "export":
+		err = cmdExport(args[1:])
+	case "pubkey":
+		err = cmdPubkey(args[1:])
 	case "open":
 		err = cmdOpen(args[1:])
 	case "list":
@@ -83,13 +91,17 @@ func usage() {
   add <name>       Seal stdin under <name>: one unechoed line from a terminal,
                    under %d bytes, or a whole pipe, up to %d bytes counting the
                    one trailing newline it strips
+  export <pubkey>  Seal stdin the same way for the host with <pubkey> and
+                   print the record
+  import           Print the secret in a record on stdin, as export prints it
+  pubkey           Print the public key
   open <name>      Print the secret
   list             List names
   remove <name>    Delete a secret
 
   --dir <path>     Use another directory instead of %s
 
-All commands need root.
+All commands but export need root.
 `, dir, binPath, maxTerminal, maxValue, defaultDir)
 }
 
@@ -107,18 +119,31 @@ func keys() (pub, priv *[32]byte, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
-	if err != nil || len(raw) != 32 {
+	secret, ok := parseKey(string(data))
+	if !ok {
 		return nil, nil, fmt.Errorf("%s: not a picoseal key", keyPath())
 	}
-	var secret, public [32]byte
-	copy(secret[:], raw)
 	derived, err := curve25519.X25519(secret[:], curve25519.Basepoint)
 	if err != nil {
 		return nil, nil, err
 	}
+	var public [32]byte
 	copy(public[:], derived)
-	return &public, &secret, nil
+	return &public, secret, nil
+}
+
+func parseKey(s string) (*[32]byte, bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(s))
+	if err != nil || len(raw) != 32 {
+		return nil, false
+	}
+	var key [32]byte
+	copy(key[:], raw)
+	return &key, true
+}
+
+func encodeKey(key *[32]byte) string {
+	return base64.RawURLEncoding.EncodeToString(key[:]) + "\n"
 }
 
 func cmdInstall(args []string) error {
@@ -148,7 +173,7 @@ func ensureKey() error {
 	if err != nil {
 		return err
 	}
-	err = writeNew(keyPath(), base64.RawURLEncoding.EncodeToString(secret[:])+"\n")
+	err = writeNew(keyPath(), encodeKey(secret))
 	if errors.Is(err, os.ErrExist) {
 		return nil
 	}
@@ -224,21 +249,76 @@ func cmdAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	value, err := readSecret()
+	record, err := sealSecret(pub)
 	if err != nil {
 		return err
 	}
-	if len(value) == 0 {
-		return errors.New("empty secret")
-	}
-	sealed, err := box.SealAnonymous(nil, value, pub, rand.Reader)
-	if err != nil {
-		return err
-	}
-	if err := writeNew(path, base64.RawURLEncoding.EncodeToString(sealed)+"\n"); err != nil {
+	if err := writeNew(path, record); err != nil {
 		return fmt.Errorf("%s not stored: %w", args[0], err)
 	}
 	return nil
+}
+
+func cmdExport(args []string) error {
+	if len(args) != 1 {
+		return errUsage
+	}
+	pub, ok := parseKey(args[0])
+	if !ok {
+		return errors.New("not a picoseal public key")
+	}
+	record, err := sealSecret(pub)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(os.Stdout, record)
+	return err
+}
+
+func cmdPubkey(args []string) error {
+	if len(args) != 0 {
+		return errUsage
+	}
+	pub, _, err := keys()
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(os.Stdout, encodeKey(pub))
+	return err
+}
+
+func sealSecret(pub *[32]byte) (string, error) {
+	value, err := readSecret()
+	if err != nil {
+		return "", err
+	}
+	if len(value) == 0 {
+		return "", errors.New("empty secret")
+	}
+	sealed, err := box.SealAnonymous(nil, value, pub, rand.Reader)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(sealed) + "\n", nil
+}
+
+func cmdImport(args []string) error {
+	if len(args) != 0 {
+		return errUsage
+	}
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxRecord+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxRecord {
+		return errors.New("stdin: not a picoseal record")
+	}
+	value, err := openRecord(data, "stdin")
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(value)
+	return err
 }
 
 // readSecret takes the secret off a pipe as it is, and off a terminal without
@@ -307,9 +387,13 @@ func unseal(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return openRecord(data, path)
+}
+
+func openRecord(data []byte, source string) ([]byte, error) {
 	sealed, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
-	if err != nil || len(sealed) < box.AnonymousOverhead {
-		return nil, fmt.Errorf("%s: not a picoseal record", path)
+	if err != nil || len(sealed) <= box.AnonymousOverhead {
+		return nil, fmt.Errorf("%s: not a picoseal record", source)
 	}
 	pub, priv, err := keys()
 	if err != nil {
@@ -317,7 +401,7 @@ func unseal(name string) ([]byte, error) {
 	}
 	value, ok := box.OpenAnonymous(nil, sealed, pub, priv)
 	if !ok {
-		return nil, fmt.Errorf("%s: not a record for this key", path)
+		return nil, fmt.Errorf("%s: not a record for this key", source)
 	}
 	return value, nil
 }

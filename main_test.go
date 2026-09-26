@@ -20,22 +20,37 @@ func install(t *testing.T) {
 	}
 }
 
-func add(t *testing.T, name, value string) error {
+func redirect(t *testing.T, std **os.File, content string) *os.File {
 	t.Helper()
-	stdin := os.Stdin
-	defer func() { os.Stdin = stdin }()
-	in, err := os.CreateTemp(t.TempDir(), "in")
+	previous := *std
+	t.Cleanup(func() { *std = previous })
+	f, err := os.CreateTemp(t.TempDir(), "std")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := in.WriteString(value); err != nil {
+	if _, err := f.WriteString(content); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := in.Seek(0, 0); err != nil {
+	if _, err := f.Seek(0, 0); err != nil {
 		t.Fatal(err)
 	}
-	os.Stdin = in
+	*std = f
+	return f
+}
+
+func add(t *testing.T, name, value string) error {
+	t.Helper()
+	redirect(t, &os.Stdin, value)
 	return cmdAdd([]string{name})
+}
+
+func output(t *testing.T, f *os.File) string {
+	t.Helper()
+	data, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func TestRoundTrip(t *testing.T) {
@@ -99,5 +114,81 @@ func TestSecretFromAnotherKey(t *testing.T) {
 	}
 	if _, err := unseal("brave"); err == nil {
 		t.Fatal("a record sealed for another key must fail")
+	}
+}
+
+func pubkey(t *testing.T) string {
+	t.Helper()
+	out := redirect(t, &os.Stdout, "")
+	if err := cmdPubkey(nil); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(output(t, out))
+}
+
+func export(t *testing.T, key, value string) string {
+	t.Helper()
+	out := redirect(t, &os.Stdout, "")
+	redirect(t, &os.Stdin, value)
+	if err := cmdExport([]string{key}); err != nil {
+		t.Fatal(err)
+	}
+	return output(t, out)
+}
+
+func importRecord(t *testing.T, record string) (string, error) {
+	t.Helper()
+	out := redirect(t, &os.Stdout, "")
+	redirect(t, &os.Stdin, record)
+	err := cmdImport(nil)
+	return output(t, out), err
+}
+
+func TestExportRefusesAMalformedPubkey(t *testing.T) {
+	for _, key := range []string{"", "not-a-key", strings.Repeat("A", 42), strings.Repeat("A", 44)} {
+		redirect(t, &os.Stdin, "secret")
+		if err := cmdExport([]string{key}); err == nil {
+			t.Fatalf("%q must be refused", key)
+		}
+	}
+}
+
+func TestNestedRecordsTravelThroughTwoHosts(t *testing.T) {
+	install(t)
+	outer, outerKey := dir, pubkey(t)
+	install(t)
+	inner, innerKey := dir, pubkey(t)
+
+	const secret = "line1\nline2 $with `chars`"
+	record := export(t, outerKey, export(t, innerKey, secret))
+
+	dir = outer
+	record, err := importRecord(t, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir = inner
+	got, err := importRecord(t, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := add(t, "brave", got); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := unseal("brave")
+	if err != nil || string(stored) != secret {
+		t.Fatalf("got %q, %v; want %q", stored, err, secret)
+	}
+}
+
+func TestImportRefusesJunkAndOtherKeys(t *testing.T) {
+	install(t)
+	record := export(t, pubkey(t), "secret")
+	if _, err := importRecord(t, "not a record"); err == nil {
+		t.Fatal("junk must be refused")
+	}
+	install(t)
+	if _, err := importRecord(t, record); err == nil {
+		t.Fatal("a record for another key must be refused")
 	}
 }
