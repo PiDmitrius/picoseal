@@ -1,36 +1,49 @@
 package main
 
 import (
+	"fmt"
+	"io"
+	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/crypto/argon2"
 )
 
-// namespace points the commands at a fresh directory, a store if store is set,
-// and drops its segments afterwards.
-func namespace(t *testing.T, store bool) string {
+// service starts a service on a fresh socket and store root and points the
+// commands at it as --user callers.
+func service(t *testing.T) string {
 	t.Helper()
-	previous := dir
-	dir = t.TempDir()
-	argonMemory = 64
-	ns := dir
-	t.Cleanup(func() {
-		dir = ns
-		cmdSeal(nil)
-		if id, _, err := findSegment(segmentKey('E', "")); err == nil {
-			removeSegment(id)
-		}
-		dir = previous
-	})
-	if store {
-		if err := cmdInstall(nil); err != nil {
-			t.Fatal(err)
-		}
+	previousBase, previousSock, previousUser := base, sockPath, asUser
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	return ns
+	base, sockPath, asUser = dir, filepath.Join(dir, "sock"), true
+	deriveU = func(key *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
+		priv = new([32]byte)
+		copy(priv[:], argon2.IDKey(password, saltFor(key), 1, 64, 1, 32))
+		return publicKey(priv), priv, nil
+	}
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go newServer().listen(listener)
+	t.Cleanup(func() {
+		listener.Close()
+		base, sockPath, asUser = previousBase, previousSock, previousUser
+	})
+	return sockPath
+}
+
+func userStore() store {
+	return store{filepath.Join(base, "users", strconv.Itoa(os.Getuid()))}
 }
 
 func redirect(t *testing.T, std **os.File, content string) *os.File {
@@ -109,8 +122,17 @@ func importBox(t *testing.T, cryptobox string) (string, error) {
 	return output(t, out), err
 }
 
+func unseal(password string, confirmed bool) error {
+	name := ""
+	if confirmed {
+		name = "confirmed"
+	}
+	_, err := request("unseal", name, []byte(password))
+	return err
+}
+
 func TestMemoryRoundTrip(t *testing.T) {
-	namespace(t, false)
+	service(t)
 	const secret = "line1\nline2 $with `chars`"
 	if err := add(t, "brave", secret+"\n"); err != nil {
 		t.Fatal(err)
@@ -130,13 +152,38 @@ func TestMemoryRoundTrip(t *testing.T) {
 	if _, err := open(t, "brave"); err == nil {
 		t.Fatal("a removed secret must be gone")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "secrets")); !os.IsNotExist(err) {
+	if _, err := os.Stat(userStore().dir); !os.IsNotExist(err) {
 		t.Fatal("memory only must write nothing to disk")
 	}
 }
 
+func TestSpacesFollowTheKernelUID(t *testing.T) {
+	s := newServer()
+	if _, err := s.do(1000, false, "list", "-", nil); err == nil || err.Error() != errRoot.Error() {
+		t.Fatalf("a user without --user must be sent to sudo, got %v", err)
+	}
+	if _, err := s.do(0, true, "list", "-", nil); err == nil {
+		t.Fatal("root must refuse --user")
+	}
+	previous := base
+	base = t.TempDir()
+	defer func() { base = previous }()
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.do(1000, true, "add", "brave", []byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.do(1001, true, "open", "brave", nil); err == nil {
+		t.Fatal("another uid must not see the secret")
+	}
+	if _, err := s.do(1000, true, "open", "../brave", nil); err == nil {
+		t.Fatal("a bad name must be refused")
+	}
+}
+
 func TestSealKeepsTheSessionKey(t *testing.T) {
-	namespace(t, false)
+	service(t)
 	key := pubkey(t)
 	if err := add(t, "brave", "secret"); err != nil {
 		t.Fatal(err)
@@ -145,7 +192,7 @@ func TestSealKeepsTheSessionKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := open(t, "brave"); err == nil {
-		t.Fatal("seal must drop the slots")
+		t.Fatal("seal must drop the secrets")
 	}
 	if pubkey(t) != key {
 		t.Fatal("seal must keep the session key")
@@ -153,8 +200,11 @@ func TestSealKeepsTheSessionKey(t *testing.T) {
 }
 
 func TestStoreReloadsOnUnseal(t *testing.T) {
-	namespace(t, true)
-	if err := unseal([]byte("pass"), nil); err != nil {
+	service(t)
+	if err := unseal("pass", false); err == nil || err.Error() != errConfirm.Error() {
+		t.Fatalf("a new store must ask for confirmation, got %v", err)
+	}
+	if err := unseal("pass", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := add(t, "brave", "secret"); err != nil {
@@ -172,14 +222,10 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if err := add(t, "gitlab", "token"); err != nil {
 		t.Fatal(err)
 	}
-	unsealPub, err := unsealKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := unseal([]byte("wrong"), unsealPub); err == nil {
+	if err := unseal("wrong", false); err == nil {
 		t.Fatal("a wrong password must be refused")
 	}
-	if err := unseal([]byte("pass"), unsealPub); err != nil {
+	if err := unseal("pass", false); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{"brave": "secret", "gitlab": "token"} {
@@ -195,6 +241,47 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	}
 }
 
+func TestFirstUnsealStoresMemoryAndSkipsBadCryptoboxes(t *testing.T) {
+	service(t)
+	if err := add(t, "early", "before"); err != nil {
+		t.Fatal(err)
+	}
+	st := userStore()
+	if err := st.ensureKey(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(st.secretPath("junk"), []byte("junk\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := unseal("pass", true); err == nil || !strings.Contains(err.Error(), "junk") {
+		t.Fatalf("a bad cryptobox must be reported, got %v", err)
+	}
+	os.Remove(st.secretPath("junk"))
+	if err := cmdSeal(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := unseal("pass", false); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := open(t, "early"); err != nil || got != "before" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+func TestMalformedRequestIsRefused(t *testing.T) {
+	service(t)
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(conn, "list 7\n")
+	conn.(*net.UnixConn).CloseWrite()
+	reply, _ := io.ReadAll(conn)
+	if !strings.HasPrefix(string(reply), "error ") {
+		t.Fatalf("got %q", reply)
+	}
+}
+
 func TestNamesStayInsideTheStore(t *testing.T) {
 	for _, name := range []string{"..", ".", "../key", "a/b", "Brave", ""} {
 		if err := checkName(name); err == nil {
@@ -204,7 +291,7 @@ func TestNamesStayInsideTheStore(t *testing.T) {
 }
 
 func TestOversizedSecretIsRefused(t *testing.T) {
-	namespace(t, false)
+	service(t)
 	oversized := strings.Repeat("A", maxValue) + "\n" + "lost tail"
 	if err := add(t, "big", oversized); err == nil {
 		t.Fatal("an oversized secret must be refused, not truncated")
@@ -220,125 +307,45 @@ func TestExportRefusesAMalformedPubkey(t *testing.T) {
 	}
 }
 
-func TestNestedCryptoboxesTravelThroughTwoSessions(t *testing.T) {
-	outer := namespace(t, false)
+func TestNestedCryptoboxesTravelThroughTwoServices(t *testing.T) {
+	outer := service(t)
 	outerKey := pubkey(t)
-	inner := namespace(t, false)
+	inner := service(t)
 	innerKey := pubkey(t)
 
 	const secret = "line1\nline2 $with `chars`"
 	cryptobox := export(t, outerKey, export(t, innerKey, secret))
 
-	dir = outer
+	sockPath = outer
 	cryptobox, err := importBox(t, cryptobox)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir = inner
+	sockPath = inner
 	got, err := importBox(t, cryptobox)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := add(t, "brave", got); err != nil {
-		t.Fatal(err)
-	}
-	if stored, err := open(t, "brave"); err != nil || stored != secret {
-		t.Fatalf("got %q, %v; want %q", stored, err, secret)
+	if err != nil || got != secret {
+		t.Fatalf("got %q, %v; want %q", got, err, secret)
 	}
 }
 
 func TestImportRefusesJunkAndOtherKeys(t *testing.T) {
-	namespace(t, false)
+	service(t)
+	if _, err := importBox(t, "not a cryptobox"); err == nil {
+		t.Fatal("before pubkey there is no session key")
+	}
 	cryptobox := export(t, pubkey(t), "secret")
 	if _, err := importBox(t, "not a cryptobox"); err == nil {
 		t.Fatal("junk must be refused")
 	}
-	namespace(t, false)
+	service(t)
 	pubkey(t)
 	if _, err := importBox(t, cryptobox); err == nil {
 		t.Fatal("a cryptobox for another key must be refused")
 	}
 }
 
-func TestDamagedSessionKeyIsReplacedOnceItsCreatorIsGone(t *testing.T) {
-	if ns := os.Getenv("PICOSEAL_DAMAGE"); ns != "" {
-		dir = ns
-		if err := createSegment(segmentKey('E', ""), make([]byte, 44)); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	namespace(t, false)
-	if err := createSegment(segmentKey('E', ""), make([]byte, 44)); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := sessionKey(true); err == nil {
-		t.Fatal("a session key its live creator still fills must be left alone")
-	}
-	id, _, _ := findSegment(segmentKey('E', ""))
-	removeSegment(id)
-	creator := exec.Command(os.Args[0], "-test.run=^TestDamagedSessionKeyIsReplacedOnceItsCreatorIsGone$")
-	creator.Env = append(os.Environ(), "PICOSEAL_DAMAGE="+dir)
-	if out, err := creator.CombinedOutput(); err != nil {
-		t.Fatalf("%v: %s", err, out)
-	}
-	if pubkey(t) == "" {
-		t.Fatal("a damaged session key must be replaced")
-	}
-}
-
-func TestRemoveLeavesAnotherNameOnTheKey(t *testing.T) {
-	namespace(t, false)
-	pub, _, err := sessionKey(true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := makeBox(pub, []byte("secret"))
-	data := append(append(append([]byte(magicSlot), scope()...), 1), 'a')
-	if err := createSegment(segmentKey('S', "b"), append(data, raw...)); err != nil {
-		t.Fatal(err)
-	}
-	if err := cmdRemove([]string{"b"}); err == nil {
-		t.Fatal("remove must not delete a slot holding another name")
-	}
-	id, _, err := findSegment(segmentKey('S', "b"))
-	if err != nil {
-		t.Fatalf("the colliding slot must survive: %v", err)
-	}
-	removeSegment(id)
-}
-
-func TestFirstUnsealStoresSlotsAndSkipsBadCryptoboxes(t *testing.T) {
-	namespace(t, true)
-	if err := add(t, "early", "before"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(secretPath("junk"), []byte("junk\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := unseal([]byte("pass"), nil); err == nil || !strings.Contains(err.Error(), "junk") {
-		t.Fatalf("a bad cryptobox must be reported, got %v", err)
-	}
-	if err := add(t, "late", "after"); err != nil {
-		t.Fatal(err)
-	}
-	os.Remove(secretPath("junk"))
-	if err := cmdSeal(nil); err != nil {
-		t.Fatal(err)
-	}
-	unsealPub, _ := unsealKey()
-	if err := unseal([]byte("pass"), unsealPub); err != nil {
-		t.Fatal(err)
-	}
-	for name, want := range map[string]string{"early": "before", "late": "after"} {
-		if got, err := open(t, name); err != nil || got != want {
-			t.Fatalf("%s: got %q, %v", name, got, err)
-		}
-	}
-}
-
 func TestLargestSecretTravels(t *testing.T) {
-	namespace(t, false)
+	service(t)
 	secret := strings.Repeat("x", maxValue)
 	cryptobox := export(t, pubkey(t), secret)
 	var wrapped strings.Builder
@@ -353,46 +360,158 @@ func TestLargestSecretTravels(t *testing.T) {
 	}
 }
 
-func TestSessionOwnerIsExplicit(t *testing.T) {
-	for _, c := range []struct {
-		euid    int
-		user    bool
-		command string
-		ok      bool
-	}{
-		{0, false, "pubkey", true},
-		{0, true, "pubkey", false},
-		{1000, false, "pubkey", false},
-		{1000, false, "import", false},
-		{1000, true, "import", true},
-		{1000, false, "export", true},
-		{0, true, "export", true},
-	} {
-		if err := checkUser(c.euid, c.user, c.command); (err == nil) != c.ok {
-			t.Errorf("euid %d, --user %v, %s: %v", c.euid, c.user, c.command, err)
-		}
+func TestNoServiceIsSaidPlainly(t *testing.T) {
+	previous := sockPath
+	sockPath = filepath.Join(t.TempDir(), "none")
+	defer func() { sockPath = previous }()
+	if _, err := request("list", "", nil); err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Fatalf("got %v", err)
 	}
 }
 
-func TestFlagsKeepANamedStoreInAnyOrder(t *testing.T) {
-	for _, args := range [][]string{
-		{"--dir", "/etc/picoseal", "--user", "list"},
-		{"--user", "--dir", "/etc/picoseal", "list"},
-	} {
-		user, named, rest, ok := parseFlags(args)
-		if !ok || !user || named != "/etc/picoseal" || !slices.Equal(rest, []string{"list"}) {
-			t.Errorf("%v: user %v, dir %q, rest %v, ok %v", args, user, named, rest, ok)
+func TestOversizedRequestIsRefused(t *testing.T) {
+	service(t)
+	if _, err := request("add", "big", []byte(strings.Repeat("A", maxValue+1))); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("got %v", err)
+	}
+	if got := list(t); got != "" {
+		t.Fatalf("nothing may be kept, got %q", got)
+	}
+}
+
+func TestUserSpaceIsCapped(t *testing.T) {
+	sp := &space{secrets: map[string]*locked{}, users: &budget{most: 1 << 30}}
+	var held []*locked
+	defer func() {
+		for _, l := range held {
+			sp.free(l)
+		}
+	}()
+	for range userPages {
+		l, err := sp.lock([]byte("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, l)
+	}
+	if _, err := sp.lock([]byte("x")); err == nil {
+		t.Fatal("a user space must stop at its share of locked memory")
+	}
+}
+
+func TestStoreBehindALinkIsRefused(t *testing.T) {
+	service(t)
+	st := userStore()
+	if err := os.MkdirAll(filepath.Dir(st.dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(base, st.dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := request("list", "", nil); err == nil || !strings.Contains(err.Error(), "not a store") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestIdleClientsHoldOnlyTheirOwnUID(t *testing.T) {
+	service(t)
+	var idle []net.Conn
+	defer func() {
+		for _, c := range idle {
+			c.Close()
+		}
+	}()
+	for range maxUIDClients {
+		c, err := net.Dial("unix", sockPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		idle = append(idle, c)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := request("list", "", nil); err == nil {
+		t.Fatal("a uid past its share of connections must be turned away")
+	}
+	idle[0].Close()
+	idle = idle[1:]
+	time.Sleep(50 * time.Millisecond)
+	if _, err := request("list", "", nil); err != nil {
+		t.Fatalf("a freed connection must serve again: %v", err)
+	}
+}
+
+func TestUsersTogetherLeaveRootRoom(t *testing.T) {
+	users := &budget{most: 3}
+	a := &space{secrets: map[string]*locked{}, users: users}
+	b := &space{secrets: map[string]*locked{}, users: users}
+	var held []*locked
+	for _, sp := range []*space{a, a, b} {
+		l, err := sp.lock([]byte("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, l)
+	}
+	if _, err := b.lock([]byte("x")); err == nil {
+		t.Fatal("users together must stop at their share")
+	}
+	b.free(held[2])
+	if l, err := b.lock([]byte("x")); err != nil {
+		t.Fatalf("a freed page must be usable again: %v", err)
+	} else {
+		b.free(l)
+	}
+	a.free(held[0])
+	a.free(held[1])
+	root := &space{secrets: map[string]*locked{}}
+	l, err := root.lock([]byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.free(l)
+}
+
+func TestLinkAboveTheStoreIsRefused(t *testing.T) {
+	service(t)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(base, "users")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := request("list", "", nil); err == nil || !strings.Contains(err.Error(), "not a store") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestNamesAreCheckedBeforeTheyReachTheService(t *testing.T) {
+	service(t)
+	if err := add(t, "-", "dash"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"", "a\nb", "a b"} {
+		if _, err := open(t, name); err == nil || !strings.Contains(err.Error(), "name must match") {
+			t.Fatalf("open %q: %v", name, err)
+		}
+		if err := cmdRemove([]string{name}); err == nil || !strings.Contains(err.Error(), "name must match") {
+			t.Fatalf("remove %q: %v", name, err)
 		}
 	}
-	for _, args := range [][]string{
-		{"--user", "--user", "list"},
-		{"--dir", "a", "--dir", "b", "list"},
-		{"--dir", "--user", "list"},
-		{"--dir"},
-		{"--foo", "list"},
-	} {
-		if _, _, _, ok := parseFlags(args); ok {
-			t.Errorf("%v must be refused", args)
-		}
+	if got, err := open(t, "-"); err != nil || got != "dash" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+func TestAddRefusesANameSealedOnDisk(t *testing.T) {
+	service(t)
+	if err := unseal("pass", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := add(t, "gitlab", "token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdSeal(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := add(t, "gitlab", "other"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("got %v", err)
 	}
 }

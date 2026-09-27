@@ -1,38 +1,36 @@
-// picoseal keeps secrets for root scripts in memory that never swaps: System V
-// segments locked with SHM_LOCK, one per secret plus one for the session key E,
-// owned by the caller with mode 0600 and scoped to its euid and store
-// directory. A slot holds the raw bytes of a cryptobox (crypto_box_seal) for E,
-// and E lives until reboot. A store whose directory holds an unseal file also
-// keeps every secret on disk as a cryptobox for U, which Argon2id derives from
-// a password salted with the store key; U exists only inside unseal, which
-// loads those cryptoboxes into slots. export makes a cryptobox for another E
-// and import opens one for this E; neither touches a store.
-// A running picoseal holds its working copies in ordinary process memory, not
-// dumpable, for as long as the command takes.
-// Permissions are the whole boundary: only root reads root's secrets, and
-// scripts an administrator has pinned are the only way an unprivileged caller
-// reaches one. Never pin picoseal itself: open with a name of the caller's
-// choosing is the key.
+// picoseal keeps secrets for scripts in the memory of one service. picoseal
+// serve runs as root, out of reach of dumps and tracing, and holds for each
+// space a session key E and the secrets in pages locked against swap. The
+// space follows the uid the kernel reports for the socket peer: root's for uid
+// 0, and with --user the caller's own; every other command is a client of that
+// socket, except export, which puts stdin in a cryptobox for a public key
+// alone.
+// A space whose store holds an unseal file also keeps every secret on disk as
+// a cryptobox for U, which Argon2id derives from a password salted with the
+// store key; a short-lived child computes it so that the service's locked
+// memory stays small, and the service forgets U once the store is loaded.
+// Stores live under /etc/picoseal, root's at the top and each user's in
+// users/<uid>, and the service takes the path from the uid, never from a
+// request. Permissions are the whole boundary: only root reaches root's
+// secrets, and scripts an administrator has pinned are the only way an
+// unprivileged caller reaches one. Never pin picoseal with free arguments.
 package main
 
 import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 
-	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/sys/unix"
 )
@@ -44,35 +42,25 @@ const (
 	maxTerminal = 4095
 	maxBox      = (maxValue+box.AnonymousOverhead+2)/3*4 + 1
 	binPath     = "/usr/local/bin/picoseal"
-	defaultDir  = "/etc/picoseal"
 )
 
 var (
-	// dir is the store; empty means memory only, the default with --user.
-	dir         string
+	base        = "/etc/picoseal"
+	sockPath    = "/run/picoseal.sock"
+	asUser      bool
 	nameRe      = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 	errUsage    = errors.New("usage")
-	errNoStore  = errors.New("no store: pass --dir with --user")
+	errRoot     = errors.New("this runs as root: use sudo")
+	errConfirm  = errors.New("a new store: confirm the password")
 	argonMemory = uint32(1 << 20)
 )
 
 func main() {
 	unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0)
-	user, named, args, ok := parseFlags(os.Args[1:])
-	if !ok {
-		usage()
-		os.Exit(1)
-	}
-	switch {
-	case named != "":
-		abs, err := filepath.Abs(named)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "picoseal: "+err.Error())
-			os.Exit(1)
-		}
-		dir = abs
-	case !user:
-		dir = defaultDir
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "--user" {
+		asUser = true
+		args = args[1:]
 	}
 	if len(args) == 0 {
 		usage()
@@ -80,6 +68,8 @@ func main() {
 	}
 	commands := map[string]func([]string) error{
 		"install": cmdInstall,
+		"serve":   cmdServe,
+		"derive":  cmdDerive,
 		"unseal":  cmdUnseal,
 		"seal":    cmdSeal,
 		"add":     cmdAdd,
@@ -95,10 +85,7 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
-	err := checkUser(os.Geteuid(), user, args[0])
-	if err == nil {
-		err = command(args[1:])
-	}
+	err := command(args[1:])
 	if errors.Is(err, errUsage) {
 		usage()
 		os.Exit(1)
@@ -112,11 +99,12 @@ func main() {
 func usage() {
 	fmt.Fprintf(os.Stderr, `picoseal — secrets in locked memory for root scripts
 
-Secrets live in locked memory until reboot or seal. A store with a password
-also keeps them on disk and reloads them on unseal.
+One service, picoseal serve, keeps every secret in its locked memory until it
+stops or seal. A store with a password also keeps them on disk and reloads
+them on unseal.
 
-  install          Create the store with secrets/, scripts/ and its key; as
-                   root also copy the binary to %s
+  install          Create %s and copy the binary to %s
+  serve            Run the service that holds the secrets
   unseal           Ask the store password, the first time twice and on a
                    terminal, load the secrets on disk into memory and store on
                    disk those only in memory
@@ -134,50 +122,12 @@ also keeps them on disk and reloads them on unseal.
   import           Open the cryptobox on stdin, as export prints it, read the
                    same way, and print the secret
 
-  --user           Use the caller's own session instead of root's; secrets live
-                   in memory only unless --dir names a store
-  --dir <path>     Use the store at <path> instead of %s. Each store has
-                   its own session key and secrets
+  --user           Use the caller's own space instead of root's
 
-Every command but export runs as root, or with --user as the caller. Only root
-reads root's secrets.
-`, binPath, maxTerminal, maxValue, defaultDir)
+Every command but export works as root, or with --user as the caller. Only root
+reaches root's secrets.
+`, base, binPath, maxTerminal, maxValue)
 }
-
-// parseFlags takes --user and --dir <path>, each at most once, before the
-// command.
-func parseFlags(args []string) (user bool, named string, rest []string, ok bool) {
-	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
-		switch {
-		case args[0] == "--user" && !user:
-			user = true
-			args = args[1:]
-		case args[0] == "--dir" && named == "" && len(args) >= 2 && args[1] != "" && !strings.HasPrefix(args[1], "--"):
-			named = args[1]
-			args = args[2:]
-		default:
-			return false, "", nil, false
-		}
-	}
-	return user, named, args, true
-}
-
-// checkUser makes whose session a command uses explicit: root's by default,
-// the caller's own only with --user. export uses no session.
-func checkUser(euid int, user bool, command string) error {
-	switch {
-	case command == "export":
-		return nil
-	case euid == 0 && user:
-		return errors.New("--user is for a user other than root")
-	case euid != 0 && !user:
-		return errors.New("this runs as root: use sudo")
-	}
-	return nil
-}
-
-func keyPath() string    { return filepath.Join(dir, "key") }
-func unsealPath() string { return filepath.Join(dir, "unseal") }
 
 func checkName(name string) error {
 	if !nameRe.MatchString(name) || name == "." || name == ".." {
@@ -185,8 +135,6 @@ func checkName(name string) error {
 	}
 	return nil
 }
-
-func secretPath(name string) string { return filepath.Join(dir, "secrets", name) }
 
 func parseKey(s string) (*[32]byte, bool) {
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(s))
@@ -200,30 +148,6 @@ func parseKey(s string) (*[32]byte, bool) {
 
 func encodeKey(key *[32]byte) string {
 	return base64.RawURLEncoding.EncodeToString(key[:]) + "\n"
-}
-
-func readKey(path string) (*[32]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	key, ok := parseKey(string(data))
-	if !ok {
-		return nil, fmt.Errorf("%s: not a picoseal key", path)
-	}
-	return key, nil
-}
-
-// unsealKey returns the public U of an unsealed-once store, or nil.
-func unsealKey() (*[32]byte, error) {
-	if dir == "" {
-		return nil, nil
-	}
-	pub, err := readKey(unsealPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	return pub, err
 }
 
 func makeBox(pub *[32]byte, value []byte) (string, error) {
@@ -246,53 +170,202 @@ func openBox(data []byte, source string, pub, priv *[32]byte) ([]byte, error) {
 	return value, nil
 }
 
+func asRoot() error {
+	if asUser {
+		return errors.New("--user is for a user other than root")
+	}
+	if os.Geteuid() != 0 {
+		return errRoot
+	}
+	return nil
+}
+
 func cmdInstall(args []string) error {
 	if len(args) != 0 {
 		return errUsage
 	}
-	if dir == "" {
-		return errNoStore
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o700); err != nil {
+	if err := asRoot(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
-		return err
-	}
-	if err := os.Chmod(filepath.Join(dir, "scripts"), 0o755); err != nil {
-		return err
-	}
-	if err := os.Chmod(dir, 0o755); err != nil {
-		return err
-	}
-	if err := ensureKey(); err != nil {
-		return err
-	}
-	if os.Geteuid() != 0 {
-		return nil
+	for dir, mode := range map[string]os.FileMode{
+		base:                           0o755,
+		filepath.Join(base, "secrets"): 0o700,
+		filepath.Join(base, "scripts"): 0o755,
+		filepath.Join(base, "users"):   0o700,
+	} {
+		if err := os.MkdirAll(dir, mode); err != nil {
+			return err
+		}
+		if err := os.Chmod(dir, mode); err != nil {
+			return err
+		}
 	}
 	return installBinary()
 }
 
-func ensureKey() error {
-	_, secret, err := box.GenerateKey(rand.Reader)
+// request sends one command to the service and returns its answer.
+func request(command, name string, payload []byte) ([]byte, error) {
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		return nil, errors.New("picoseal serve is not running")
+	}
+	defer conn.Close()
+	if name == "" {
+		name = "-"
+	}
+	user := 0
+	if asUser {
+		user = 1
+	}
+	if _, err := fmt.Fprintf(conn, "%s %d %s\n", command, user, name); err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write(payload); err != nil {
+		return nil, err
+	}
+	conn.(*net.UnixConn).CloseWrite()
+	reply, err := io.ReadAll(conn)
+	if err != nil {
+		return nil, err
+	}
+	status, body, _ := bytes.Cut(reply, []byte("\n"))
+	if string(status) != "ok" {
+		return nil, errors.New(strings.TrimPrefix(string(status), "error "))
+	}
+	return body, nil
+}
+
+func printed(body []byte, err error) error {
 	if err != nil {
 		return err
 	}
-	err = writeNew(keyPath(), encodeKey(secret))
-	if errors.Is(err, os.ErrExist) {
-		return nil
+	_, err = os.Stdout.Write(body)
+	return err
+}
+
+func cmdUnseal(args []string) error {
+	if len(args) != 0 {
+		return errUsage
 	}
+	password, err := readSecret("Password", maxValue)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("key created in %s\n", dir)
-	return nil
+	_, err = request("unseal", "", password)
+	if err == nil || err.Error() != errConfirm.Error() {
+		return err
+	}
+	if !isTerminal() {
+		return errors.New("the first unseal sets the password and needs a terminal to confirm it")
+	}
+	again, err := readSecret("Password again", maxValue)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(again, password) {
+		return errors.New("passwords differ")
+	}
+	_, err = request("unseal", "confirmed", password)
+	return err
+}
+
+func cmdSeal(args []string) error {
+	if len(args) != 0 {
+		return errUsage
+	}
+	_, err := request("seal", "", nil)
+	return err
+}
+
+func cmdAdd(args []string) error {
+	if len(args) != 1 {
+		return errUsage
+	}
+	if err := checkName(args[0]); err != nil {
+		return err
+	}
+	value, err := readSecret("Secret", maxValue)
+	if err != nil {
+		return err
+	}
+	_, err = request("add", args[0], value)
+	return err
+}
+
+func cmdOpen(args []string) error {
+	if len(args) != 1 {
+		return errUsage
+	}
+	if err := checkName(args[0]); err != nil {
+		return err
+	}
+	return printed(request("open", args[0], nil))
+}
+
+func cmdList(args []string) error {
+	if len(args) != 0 {
+		return errUsage
+	}
+	return printed(request("list", "", nil))
+}
+
+func cmdRemove(args []string) error {
+	if len(args) != 1 {
+		return errUsage
+	}
+	if err := checkName(args[0]); err != nil {
+		return err
+	}
+	_, err := request("remove", args[0], nil)
+	return err
+}
+
+func cmdPubkey(args []string) error {
+	if len(args) != 0 {
+		return errUsage
+	}
+	return printed(request("pubkey", "", nil))
+}
+
+func cmdImport(args []string) error {
+	if len(args) != 0 {
+		return errUsage
+	}
+	data, err := readSecret("Cryptobox", 2*maxBox)
+	if err != nil {
+		return err
+	}
+	return printed(request("import", "", data))
+}
+
+func cmdExport(args []string) error {
+	if len(args) != 1 {
+		return errUsage
+	}
+	pub, ok := parseKey(args[0])
+	if !ok {
+		return errors.New("not a picoseal public key")
+	}
+	value, err := readSecret("Secret", maxValue)
+	if err != nil {
+		return err
+	}
+	cryptobox, err := makeBox(pub, value)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(os.Stdout, cryptobox)
+	return err
+}
+
+func isTerminal() bool {
+	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS)
+	return err == nil
 }
 
 // writeNew creates path or leaves nothing behind.
 func writeNew(path, data string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}
@@ -345,330 +418,6 @@ func installBinary() error {
 	}
 	fmt.Printf("installed %s\n", binPath)
 	return nil
-}
-
-// deriveU turns the store password into U; the store key salts it, so the
-// password alone opens nothing and the same password differs across stores.
-func deriveU(password []byte) (pub, priv *[32]byte, err error) {
-	key, err := readKey(keyPath())
-	if err != nil {
-		return nil, nil, err
-	}
-	if limit, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		if max, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64); err == nil && max < uint64(argonMemory)<<10+64<<20 {
-			return nil, nil, fmt.Errorf("unseal needs %d MiB of memory, the cgroup allows %d MiB", argonMemory>>10+64, max>>20)
-		}
-	}
-	salt := sha256.Sum256(append([]byte("picoseal unseal\x00"), key[:]...))
-	priv = new([32]byte)
-	copy(priv[:], argon2.IDKey(password, salt[:], 3, argonMemory, 1, 32))
-	return publicKey(priv), priv, nil
-}
-
-func cmdUnseal(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	if dir == "" {
-		return errNoStore
-	}
-	unsealPub, err := unsealKey()
-	if err != nil {
-		return err
-	}
-	var password []byte
-	if unsealPub == nil {
-		if !isTerminal() {
-			return errors.New("the first unseal sets the password and needs a terminal to confirm it")
-		}
-		if password, err = readSecret("Password", maxValue); err != nil {
-			return err
-		}
-		again, err := readSecret("Password again", maxValue)
-		if err != nil {
-			return err
-		}
-		if string(again) != string(password) {
-			return errors.New("passwords differ")
-		}
-	} else if password, err = readSecret("Password", maxValue); err != nil {
-		return err
-	}
-	return unseal(password, unsealPub)
-}
-
-// unseal checks password against the store's public U, or sets it when unsealPub
-// is nil, loads every cryptobox on disk that is not in a slot yet and stores on
-// disk every slot that is not there yet.
-func unseal(password []byte, unsealPub *[32]byte) error {
-	pub, priv, err := deriveU(password)
-	if err != nil {
-		return err
-	}
-	defer clear(priv[:])
-	if unsealPub == nil {
-		if err := writeNew(unsealPath(), encodeKey(pub)); err != nil {
-			return err
-		}
-	} else if *pub != *unsealPub {
-		return errors.New("wrong password")
-	}
-	entries, err := os.ReadDir(filepath.Join(dir, "secrets"))
-	if err != nil {
-		return err
-	}
-	loaded, err := slots()
-	if err != nil {
-		return err
-	}
-	var failed []error
-	for _, entry := range entries {
-		name := entry.Name()
-		if _, ok := loaded[name]; ok {
-			continue
-		}
-		data, err := os.ReadFile(secretPath(name))
-		if err == nil {
-			var value []byte
-			if value, err = openBox(data, secretPath(name), pub, priv); err == nil {
-				err = storeSlot(name, value)
-			}
-		}
-		if err != nil {
-			failed = append(failed, err)
-		}
-	}
-	for name := range loaded {
-		if _, err := os.Stat(secretPath(name)); !errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		value, err := loadSlot(name)
-		if err == nil {
-			var cryptobox string
-			if cryptobox, err = makeBox(pub, value); err == nil {
-				err = writeNew(secretPath(name), cryptobox)
-			}
-		}
-		if err != nil {
-			failed = append(failed, fmt.Errorf("%s not stored: %w", name, err))
-		}
-	}
-	return errors.Join(failed...)
-}
-
-func cmdSeal(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	loaded, err := slots()
-	if err != nil {
-		return err
-	}
-	for _, id := range loaded {
-		if err := removeSegment(id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func cmdAdd(args []string) error {
-	if len(args) != 1 {
-		return errUsage
-	}
-	name := args[0]
-	if err := checkName(name); err != nil {
-		return err
-	}
-	unsealPub, err := unsealKey()
-	if err != nil {
-		return err
-	}
-	if _, _, err := findSlot(name); err == nil {
-		return fmt.Errorf("%s %w", name, errExists)
-	}
-	value, err := readSecret("Secret", maxValue)
-	if err != nil {
-		return err
-	}
-	if unsealPub != nil {
-		cryptobox, err := makeBox(unsealPub, value)
-		if err != nil {
-			return err
-		}
-		if err := writeNew(secretPath(name), cryptobox); err != nil {
-			return fmt.Errorf("%s not stored: %w", name, err)
-		}
-	}
-	if err := storeSlot(name, value); err != nil {
-		// A concurrent unseal may have loaded the cryptobox just written.
-		if loaded, loadErr := loadSlot(name); unsealPub != nil && errors.Is(err, errExists) && loadErr == nil && bytes.Equal(loaded, value) {
-			return nil
-		}
-		if unsealPub != nil {
-			os.Remove(secretPath(name))
-		}
-		return err
-	}
-	if unsealPub != nil {
-		return nil
-	}
-	// A first unseal may have run since, without seeing this slot.
-	if unsealPub, err = unsealKey(); unsealPub == nil || err != nil {
-		return err
-	}
-	cryptobox, err := makeBox(unsealPub, value)
-	if err == nil {
-		if err = writeNew(secretPath(name), cryptobox); errors.Is(err, os.ErrExist) {
-			err = nil
-		}
-	}
-	return err
-}
-
-func cmdOpen(args []string) error {
-	if len(args) != 1 {
-		return errUsage
-	}
-	if err := checkName(args[0]); err != nil {
-		return err
-	}
-	value, err := loadSlot(args[0])
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, errNoSession) {
-		if _, statErr := os.Stat(secretPath(args[0])); dir != "" && statErr == nil {
-			return fmt.Errorf("%s is sealed: run picoseal unseal", args[0])
-		}
-		return fmt.Errorf("%s: no such secret", args[0])
-	}
-	if err != nil {
-		return err
-	}
-	_, err = os.Stdout.Write(value)
-	return err
-}
-
-func cmdList(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	loaded, err := slots()
-	if err != nil {
-		return err
-	}
-	names := map[string]string{}
-	for name := range loaded {
-		names[name] = name
-	}
-	if dir != "" {
-		entries, err := os.ReadDir(filepath.Join(dir, "secrets"))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		for _, entry := range entries {
-			if _, ok := names[entry.Name()]; !ok {
-				names[entry.Name()] = entry.Name() + " sealed"
-			}
-		}
-	}
-	lines := make([]string, 0, len(names))
-	for _, line := range names {
-		lines = append(lines, line)
-	}
-	sort.Strings(lines)
-	for _, line := range lines {
-		if _, err := fmt.Println(line); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func cmdRemove(args []string) error {
-	if len(args) != 1 {
-		return errUsage
-	}
-	name := args[0]
-	if err := checkName(name); err != nil {
-		return err
-	}
-	found := false
-	if id, _, err := findSlot(name); err == nil || errors.Is(err, errDamaged) {
-		if err := removeSegment(id); err != nil {
-			return err
-		}
-		found = true
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if dir != "" {
-		err := os.Remove(secretPath(name))
-		if err == nil {
-			found = true
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-	if !found {
-		return fmt.Errorf("%s: no such secret", name)
-	}
-	return nil
-}
-
-func cmdPubkey(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	pub, _, err := sessionKey(true)
-	if err != nil {
-		return err
-	}
-	_, err = io.WriteString(os.Stdout, encodeKey(pub))
-	return err
-}
-
-func cmdExport(args []string) error {
-	if len(args) != 1 {
-		return errUsage
-	}
-	pub, ok := parseKey(args[0])
-	if !ok {
-		return errors.New("not a picoseal public key")
-	}
-	value, err := readSecret("Secret", maxValue)
-	if err != nil {
-		return err
-	}
-	cryptobox, err := makeBox(pub, value)
-	if err != nil {
-		return err
-	}
-	_, err = io.WriteString(os.Stdout, cryptobox)
-	return err
-}
-
-func cmdImport(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	data, err := readSecret("Cryptobox", 2*maxBox)
-	if err != nil {
-		return err
-	}
-	pub, priv, err := sessionKey(false)
-	if err != nil {
-		return err
-	}
-	value, err := openBox(data, "stdin", pub, priv)
-	if err != nil {
-		return err
-	}
-	_, err = os.Stdout.Write(value)
-	return err
-}
-
-func isTerminal() bool {
-	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS)
-	return err == nil
 }
 
 // readSecret takes a value off a pipe as it is, and off a terminal without

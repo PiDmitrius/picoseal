@@ -1,22 +1,26 @@
 # picoseal
 
-Secrets kept in locked memory for scripts you pin in sudoers, delivered in
-cryptoboxes that only the host using them can open.
+Secrets kept in the locked memory of one service for scripts you pin in
+sudoers, delivered in cryptoboxes that only the host using them can open.
 
 A secret is a value under a name. A cryptobox is a secret locked for one key, as
-one line of base64url. Every user and store has a session key that lives in
-memory until reboot; `pubkey` prints its public half, `export` puts a secret in
-a cryptobox for it and `import` opens that cryptobox.
+one line of base64url. `picoseal serve` runs as root and holds every secret; the
+other commands talk to it. It keeps a space for root and one for each user who
+passes `--user`, and it learns who is asking from the kernel, not from the
+caller. Each space has a session key that lives until the service stops;
+`pubkey` prints its public half, `export` puts a secret in a cryptobox for it
+and `import` opens that cryptobox.
 
-Secrets stay in locked memory, never swapped, until reboot or `seal`. A store
-with a password also keeps them on disk, as cryptoboxes for a key derived from
-that password. `unseal` takes out those cryptoboxes and learns to open them;
-`seal` puts them away and forgets how, while cryptoboxes sent to `pubkey` still
-open.
+Secrets stay in the service's memory, in pages locked against swap and left out
+of core dumps, until the service stops or `seal`. A store with a password also
+keeps them on disk, as cryptoboxes for a key derived from that password.
+`unseal` takes out those cryptoboxes and learns to open them; `seal` puts them
+away and forgets how, while cryptoboxes sent to `pubkey` still open.
 
 ## Commands
 
-    picoseal install          Create the store and its key; as root also /usr/local/bin/picoseal
+    picoseal install          Create /etc/picoseal and copy the binary to /usr/local/bin
+    picoseal serve            Run the service that holds the secrets
     picoseal unseal           Ask the store password and load the secrets on disk into memory
     picoseal seal             Drop every secret from memory
     picoseal add <name>       Keep stdin as <name>
@@ -26,8 +30,7 @@ open.
     picoseal pubkey           Print the session public key
     picoseal export <pubkey>  Put stdin in a cryptobox for <pubkey> and print it
     picoseal import           Open the cryptobox on stdin and print the secret
-    picoseal --user ...       Use the caller's own session instead of root's
-    picoseal --dir <path> ... Use the store at <path>
+    picoseal --user ...       Use the caller's own space instead of root's
 
 `add`, `export`, `import` and `unseal` read one unechoed line from a terminal,
 under 4095 bytes, or a whole pipe, up to 65536 bytes of secret counting the one
@@ -37,50 +40,68 @@ trailing newline they strip; a piped cryptobox may wrap or end in CRLF.
 `add` and `open` keep secrets; `export` and `import` make and open cryptoboxes
 without keeping anything.
 
-Every command but `export` runs as root, with root's session and the store
-`/etc/picoseal`, and refuses any other user. `--user` makes it run as the
-calling user instead, with that user's own session and secrets in memory only
-unless `--dir` names a store; root refuses `--user`. `export` touches no session
-and runs as anyone. Each store has its own session key and secrets, so `pubkey`,
-`import` and `open` for one delivery take the same flags. Only root reads root's
-secrets. systemd-logind drops the memory of a user other than root when their
-last session ends, unless `loginctl enable-linger` keeps it.
+Every command but `export` works as root, in root's space, and refuses any other
+user. `--user` works as the calling user, in that user's own space; root refuses
+`--user`. `export` needs neither the service nor root. Only root reaches root's
+secrets, and a user reaches their own only through the service.
+
+## The service
+
+    sudo ./picoseal install
+
+`install` creates `/etc/picoseal` with `secrets/`, `scripts/` and `users/`, and
+copies the binary to `/usr/local/bin`; running it again keeps the binary's
+mode. Run the service under systemd:
+
+    # /etc/systemd/system/picoseal.service
+    [Service]
+    ExecStart=/usr/local/bin/picoseal serve
+    Restart=on-failure
+
+    [Install]
+    WantedBy=multi-user.target
+
+    sudo systemctl enable --now picoseal
+
+In a container, start `picoseal serve &` before anything that needs a secret.
+Every other command says so plainly when the service is not running. Stopping
+or restarting it drops every secret in memory and every session key.
 
 ## Memory only
 
 Without a store password, picoseal writes nothing to disk: secrets live until
-reboot and are delivered again after it. A running picoseal and the program a
-secret is piped to hold working copies in ordinary memory while they run.
+the service stops and are delivered again after it. The service while it
+answers, the clients and the program a secret is piped to hold working copies
+in ordinary memory while they run.
 
     sudo picoseal pubkey                                  # target
-    picoseal export <pubkey> < token > gitlab.box         # anywhere, no root
+    picoseal export <pubkey> < token > gitlab.box         # anywhere
     sudo picoseal import < gitlab.box | sudo picoseal add gitlab   # target
 
 `picoseal-export.html` does what `export` does in a browser, offline and
 self-contained: paste the public key and the secret and press Export and copy,
-which puts the cryptobox in the clipboard in place of the secret.
-Open it as a local file or from a server you trust over https; a page served
-over plain http from elsewhere can be rewritten on the way.
+which puts the cryptobox in the clipboard in place of the secret. Open it as a
+local file or from a server you trust over https; a page served over plain http
+from elsewhere can be rewritten on the way.
 
-The session key changes on every reboot, so take a fresh `pubkey` over a channel
-that authenticates the host, such as ssh; a key swapped on the way hands the
-secret to whoever swapped it. A cryptobox opens only in the session it was
-made for.
+The session key changes every time the service starts, so take a fresh `pubkey`
+over a channel that authenticates the host, such as ssh; a key swapped on the
+way hands the secret to whoever swapped it. A cryptobox opens only in the space
+and the run of the service it was made for.
 
 ## A store on disk
 
-    sudo ./picoseal install
     sudo picoseal unseal
+    picoseal --user unseal
 
-`install` creates `/etc/picoseal` with `secrets/` and `scripts/` and the store
-key, and copies the binary to `/usr/local/bin`; running it again keeps the key.
-The first `unseal` asks the password twice, on a terminal, and writes to
-`secrets/` the secrets already in memory; from then on `add` also writes every
-secret there, even before the next `unseal`.
-After a reboot or `seal`, one `unseal` loads them all again. The password and
+Root's store is `/etc/picoseal`; a user's is `/etc/picoseal/users/<uid>`, which
+only the service reads. The first `unseal` asks the password twice, on a
+terminal, and writes to the store the secrets already in memory; from then on
+`add` also writes every secret there, even before the next `unseal`. After the
+service restarts or `seal`, one `unseal` loads them all again. The password and
 the store key are both needed: a copy of the disk without the password opens
 nothing, and neither does the password alone. `unseal` needs about 1 GiB of
-memory.
+memory for a moment.
 
 ## Nesting
 
@@ -128,11 +149,10 @@ Only cryptoboxes then reach the chat, the model and the tool output.
 
 That holds by setup, not by the agent's care, when the agent's user has no
 root, no `sudo` beyond the lines below and no `docker` group, and the owner
-reviews and installs every script that uses a secret.
-A forgotten `sudo` fails, since picoseal runs as another user only with
-`--user`; `sudo chmod 700 /usr/local/bin/picoseal` also keeps the agent from
-reaching for `--user`, and `install` keeps that mode. The receiving script
-prints nothing:
+reviews and installs every script that uses a secret. A forgotten `sudo` fails,
+since picoseal works in another user's space only with `--user`;
+`sudo chmod 700 /usr/local/bin/picoseal` also keeps the agent from reaching for
+`--user`, and `install` keeps that mode. The receiving script prints nothing:
 
     #!/bin/sh
     # /etc/picoseal/scripts/receive <name>

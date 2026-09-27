@@ -26,7 +26,7 @@ func TestExportPageCryptoboxesOpen(t *testing.T) {
 	}
 	script.WriteString("\nprocess.stdout.write(makeCryptobox(process.argv[1], process.argv[2]));\n})();\n")
 
-	namespace(t, false)
+	service(t)
 	key := pubkey(t)
 	for text, want := range map[string]string{
 		"token":                       "token",
