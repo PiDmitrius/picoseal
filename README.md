@@ -33,9 +33,10 @@ away and forgets how, while cryptoboxes sent to `pubkey` still open.
     picoseal import           Open the cryptobox on stdin and print the secret
     picoseal --user ...       Use the caller's own space instead of root's
 
-`add`, `export`, `import`, `init` and `unseal` read one unechoed line from a terminal,
-under 4095 bytes, or a whole pipe, up to 65536 bytes of secret counting the one
-trailing newline they strip; a piped cryptobox may wrap or end in CRLF.
+`add`, `export`, `import`, `init` and `unseal` read one unechoed line from a
+terminal, under 4095 bytes, or a whole pipe, up to 65536 bytes of secret
+counting the one trailing newline they strip; a piped cryptobox may wrap or end
+in CRLF.
 `add` refuses to replace an existing name: rotate with `remove` then `add`.
 
 `add` and `open` keep secrets; `export` and `import` make and open cryptoboxes
@@ -99,10 +100,10 @@ Root's store is `/etc/picoseal`; a user's is `/etc/picoseal/users/<uid>`, which
 only the service reads. `init` sets the password, asking it twice on a terminal
 and once from a pipe, and writes to the store the secrets already in memory;
 from then on `add` also writes every secret there. After the service restarts
-or `seal`, one `unseal` loads them all again. The password and
-the store key are both needed: a copy of the disk without the password opens
-nothing, and neither does the password alone. `init` and `unseal` need about
-1 GiB of memory for a moment.
+or `seal`, one `unseal` loads them all again, and stores any secret `init`
+could not. The password and the store key are both needed: a copy of the disk
+without the password opens nothing, and neither does the password alone.
+`init` and `unseal` need about 1 GiB of memory for a moment.
 
 ## Nesting
 

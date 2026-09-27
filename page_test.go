@@ -34,7 +34,7 @@ func TestExportPageCryptoboxesOpen(t *testing.T) {
 		"двe\nстроки $with `chars` ✓": "двe\nстроки $with `chars` ✓",
 		strings.Repeat("x", 300):      strings.Repeat("x", 300),
 	} {
-		cryptobox, err := exec.Command(node, "-e", script.String(), key, text).Output()
+		cryptobox, err := exec.Command(node, "-e", script.String(), "--", key, text).Output()
 		if err != nil {
 			t.Fatalf("%q: %v", text, err)
 		}
@@ -44,14 +44,14 @@ func TestExportPageCryptoboxesOpen(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{"", "short", key + "A"} {
-		if err := exec.Command(node, "-e", script.String(), bad, "token").Run(); err == nil {
+		if err := exec.Command(node, "-e", script.String(), "--", bad, "token").Run(); err == nil {
 			t.Fatalf("public key %q must be refused", bad)
 		}
 	}
-	if err := exec.Command(node, "-e", script.String(), key, strings.Repeat("x", maxValue)).Run(); err != nil {
+	if err := exec.Command(node, "-e", script.String(), "--", key, strings.Repeat("x", maxValue)).Run(); err != nil {
 		t.Fatalf("%d bytes must go in a cryptobox: %v", maxValue, err)
 	}
-	if err := exec.Command(node, "-e", script.String(), key, strings.Repeat("x", maxValue)+"\n").Run(); err == nil {
+	if err := exec.Command(node, "-e", script.String(), "--", key, strings.Repeat("x", maxValue)+"\n").Run(); err == nil {
 		t.Fatalf("%d bytes and a newline must be refused, as export does", maxValue)
 	}
 }

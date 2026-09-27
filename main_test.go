@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -534,5 +535,20 @@ func TestSyntaxIsCheckedBeforeStdin(t *testing.T) {
 		if _, err := run(t, "secret", args...); err == nil || strings.Contains(err.Error(), "not running") {
 			t.Fatalf("%v must be refused before the service is asked, got %v", args, err)
 		}
+	}
+}
+
+func TestWriteNewKeepsWhatIsThere(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "key")
+	if err := writeNew(path, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNew(path, "second"); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("got %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if data, _ := os.ReadFile(path); string(data) != "first" || len(entries) != 1 {
+		t.Fatalf("got %q and %d entries", data, len(entries))
 	}
 }

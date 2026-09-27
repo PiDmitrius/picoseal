@@ -104,8 +104,8 @@ them on unseal.
   serve            Run the service that holds the secrets
   init             Set the store password, asked twice on a terminal, and store
                    on disk the secrets in memory
-  unseal           Ask the store password and load the secrets on disk into
-                   memory
+  unseal           Ask the store password, load the secrets on disk into memory
+                   and store on disk those only in memory
   seal             Drop every secret from memory
   add <name>       Keep stdin as <name>, on disk too if the store is set up:
                    one unechoed line from a terminal, under %d bytes, or
@@ -297,12 +297,14 @@ func isTerminal() bool {
 	return err == nil
 }
 
-// writeNew creates path or leaves nothing behind.
+// writeNew publishes data at path whole and synced, or fails and leaves path
+// as it was; a crash can leave only a Tmp file, a name no secret can take.
 func writeNew(path, data string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|unix.O_NOFOLLOW, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), "Tmp")
 	if err != nil {
 		return err
 	}
+	defer os.Remove(f.Name())
 	_, err = io.WriteString(f, data)
 	if err == nil {
 		err = f.Sync()
@@ -310,8 +312,10 @@ func writeNew(path, data string) error {
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
+	if err == nil {
+		err = os.Link(f.Name(), path)
+	}
 	if err != nil {
-		os.Remove(path)
 		return err
 	}
 	return fsyncDir(filepath.Dir(path))
