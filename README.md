@@ -22,8 +22,9 @@ that password, and loads them back on `unseal`.
     picoseal import           Print the stream in a record on stdin
     picoseal --dir <path> ... Use the store at <path>
 
-`add` and `export` read one unechoed line from a terminal, under 4095 bytes, or
-a whole pipe, up to 65536 bytes counting the one trailing newline they strip.
+`add`, `export` and `import` read one unechoed line from a terminal, under 4095
+bytes, or a whole pipe, up to 65536 bytes of secret counting the one trailing
+newline they strip; a record may wrap or end in CRLF.
 `add` refuses to replace an existing name: rotate with `remove` then `add`.
 
 `add` and `open` keep secrets; `export` and `import` seal and open a stream for

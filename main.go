@@ -108,8 +108,8 @@ func usage() {
 Secrets live in locked memory until reboot or seal. A store with an unseal
 password also keeps them on disk and reloads them on unseal.
 
-  install          Create the store %s with secrets/ and scripts/ and its
-                   key; as root also copy the binary to %s
+  install          Create the store with secrets/, scripts/ and its key; as
+                   root also copy the binary to %s
   unseal           Ask the store password, the first time twice, and load the
                    secrets on disk into memory
   seal             Drop every secret from memory
@@ -123,20 +123,14 @@ password also keeps them on disk and reloads them on unseal.
   pubkey           Print the session public key
   export <pubkey>  Seal stdin the same way for the session with <pubkey> and
                    print the record
-  import           Print the stream in a record on stdin, as export prints it
+  import           Print the stream in a record on stdin, as export prints it,
+                   read the same way
 
   --dir <path>     Use the store at <path>; root uses %s by default,
                    everyone else keeps secrets in memory only
 
 Only root reads root's secrets.
-`, storeName(), binPath, maxTerminal, maxValue, defaultDir)
-}
-
-func storeName() string {
-	if dir == "" {
-		return "given by --dir"
-	}
-	return dir
+`, binPath, maxTerminal, maxValue, defaultDir)
 }
 
 func keyPath() string    { return filepath.Join(dir, "key") }
@@ -340,17 +334,17 @@ func cmdUnseal(args []string) error {
 		if !isTerminal() {
 			return errors.New("the first unseal sets the password and needs a terminal to confirm it")
 		}
-		if password, err = readSecret("Password"); err != nil {
+		if password, err = readSecret("Password", maxValue); err != nil {
 			return err
 		}
-		again, err := readSecret("Password again")
+		again, err := readSecret("Password again", maxValue)
 		if err != nil {
 			return err
 		}
 		if string(again) != string(password) {
 			return errors.New("passwords differ")
 		}
-	} else if password, err = readSecret("Password"); err != nil {
+	} else if password, err = readSecret("Password", maxValue); err != nil {
 		return err
 	}
 	return unseal(password, marker)
@@ -446,7 +440,7 @@ func cmdAdd(args []string) error {
 	if _, _, err := findSlot(name); err == nil {
 		return fmt.Errorf("%s %w", name, errExists)
 	}
-	value, err := readSecret("Secret")
+	value, err := readSecret("Secret", maxValue)
 	if err != nil {
 		return err
 	}
@@ -593,7 +587,7 @@ func cmdExport(args []string) error {
 	if !ok {
 		return errors.New("not a picoseal public key")
 	}
-	value, err := readSecret("Secret")
+	value, err := readSecret("Secret", maxValue)
 	if err != nil {
 		return err
 	}
@@ -609,12 +603,9 @@ func cmdImport(args []string) error {
 	if len(args) != 0 {
 		return errUsage
 	}
-	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxRecord+1))
+	data, err := readSecret("Record", maxRecord)
 	if err != nil {
 		return err
-	}
-	if len(data) > maxRecord {
-		return errors.New("stdin: not a picoseal record")
 	}
 	pub, priv, err := sessionKey(false)
 	if err != nil {
@@ -635,16 +626,16 @@ func isTerminal() bool {
 
 // readSecret takes a value off a pipe as it is, and off a terminal without
 // echoing it.
-func readSecret(prompt string) ([]byte, error) {
+func readSecret(prompt string, limit int) ([]byte, error) {
 	fd := int(os.Stdin.Fd())
 	termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
 	if err != nil {
-		piped, err := io.ReadAll(io.LimitReader(os.Stdin, maxValue+1))
+		piped, err := io.ReadAll(io.LimitReader(os.Stdin, int64(limit)+1))
 		if err != nil {
 			return nil, err
 		}
 		if len(piped) > maxValue {
-			return nil, fmt.Errorf("secret exceeds %d bytes", maxValue)
+			return nil, fmt.Errorf("%s exceeds %d bytes", strings.ToLower(prompt), limit)
 		}
 		return nonEmpty(prompt, strings.TrimSuffix(string(piped), "\n"))
 	}
