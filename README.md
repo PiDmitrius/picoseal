@@ -123,8 +123,10 @@ Only cryptoboxes then reach the chat, the model and the tool output.
 
 That holds by setup, not by the agent's care, when the agent's user has no
 root, no `sudo` beyond the lines below and no `docker` group, and the owner
-reviews and installs every script that uses a secret. The receiving script
-prints nothing:
+reviews and installs every script that uses a secret.
+`sudo chmod 700 /usr/local/bin/picoseal` keeps the agent from running picoseal
+as itself, where a forgotten `sudo` would give it a session key of its own;
+`install` keeps that mode. The receiving script prints nothing:
 
     #!/bin/sh
     # /etc/picoseal/scripts/receive <name>

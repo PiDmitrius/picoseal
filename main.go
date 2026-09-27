@@ -5,8 +5,8 @@
 // and E lives until reboot. A store whose directory holds an unseal file also
 // keeps every secret on disk as a cryptobox for U, which Argon2id derives from
 // a password salted with the store key; U exists only inside unseal, which
-// loads those cryptoboxes into slots. export makes a cryptobox for another E and import
-// opens one for this E; neither touches a store.
+// loads those cryptoboxes into slots. export makes a cryptobox for another E
+// and import opens one for this E; neither touches a store.
 // A running picoseal holds its working copies in ordinary process memory, not
 // dumpable, for as long as the command takes.
 // Permissions are the whole boundary: only root reads root's secrets, and
@@ -289,11 +289,15 @@ func installBinary() error {
 	if err != nil {
 		return err
 	}
+	mode := os.FileMode(0o755)
+	if installed, err := os.Stat(binPath); err == nil {
+		mode = installed.Mode().Perm()
+	}
 	staged := binPath + ".new"
-	if err := os.WriteFile(staged, data, 0o755); err != nil {
+	if err := os.WriteFile(staged, data, mode); err != nil {
 		return fmt.Errorf("%s not installed: %w", binPath, err)
 	}
-	if err := os.Chmod(staged, 0o755); err != nil {
+	if err := os.Chmod(staged, mode); err != nil {
 		return err
 	}
 	if err := os.Rename(staged, binPath); err != nil {
