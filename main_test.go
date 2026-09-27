@@ -139,12 +139,10 @@ func remove(t *testing.T, name string) error {
 	return err
 }
 
-func unseal(password string, confirmed bool) error {
-	args := []string{"--user", "unseal"}
-	if confirmed {
-		args = append(args, "--confirmed")
-	}
-	_, err := request(args, []byte(password))
+// unseal runs init or unseal with a piped password.
+func unseal(t *testing.T, command, password string) error {
+	t.Helper()
+	_, err := run(t, password, command)
 	return err
 }
 
@@ -176,10 +174,10 @@ func TestMemoryRoundTrip(t *testing.T) {
 
 func TestSpacesFollowTheKernelUID(t *testing.T) {
 	s := newServer()
-	if _, err := s.do(1000, false, "list", "-", false, nil); err == nil || err.Error() != errRoot.Error() {
+	if _, err := s.do(1000, false, "list", "-", nil); err == nil || err.Error() != errRoot.Error() {
 		t.Fatalf("a user without --user must be sent to sudo, got %v", err)
 	}
-	if _, err := s.do(0, true, "list", "-", false, nil); err == nil {
+	if _, err := s.do(0, true, "list", "-", nil); err == nil {
 		t.Fatal("root must refuse --user")
 	}
 	previous := base
@@ -188,13 +186,13 @@ func TestSpacesFollowTheKernelUID(t *testing.T) {
 	if err := os.Chmod(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.do(1000, true, "add", "brave", false, []byte("secret")); err != nil {
+	if _, err := s.do(1000, true, "add", "brave", []byte("secret")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.do(1001, true, "open", "brave", false, nil); err == nil {
+	if _, err := s.do(1001, true, "open", "brave", nil); err == nil {
 		t.Fatal("another uid must not see the secret")
 	}
-	if _, err := s.do(1000, true, "open", "../brave", false, nil); err == nil {
+	if _, err := s.do(1000, true, "open", "../brave", nil); err == nil {
 		t.Fatal("a bad name must be refused")
 	}
 }
@@ -216,11 +214,14 @@ func TestSealKeepsTheSessionKey(t *testing.T) {
 
 func TestStoreReloadsOnUnseal(t *testing.T) {
 	service(t)
-	if err := unseal("pass", false); err == nil || err.Error() != errConfirm.Error() {
-		t.Fatalf("a new store must ask for confirmation, got %v", err)
+	if err := unseal(t, "unseal", "pass"); err == nil || !strings.Contains(err.Error(), "init") {
+		t.Fatalf("unseal without a store must point to init, got %v", err)
 	}
-	if err := unseal("pass", true); err != nil {
+	if err := unseal(t, "init", "pass\n"); err != nil {
 		t.Fatal(err)
+	}
+	if err := unseal(t, "init", "other"); err == nil || !strings.Contains(err.Error(), "exists") {
+		t.Fatalf("init must refuse an existing store, got %v", err)
 	}
 	if err := add(t, "brave", "secret"); err != nil {
 		t.Fatal(err)
@@ -235,10 +236,10 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if err := add(t, "gitlab", "token"); err != nil {
 		t.Fatal(err)
 	}
-	if err := unseal("wrong", false); err == nil {
+	if err := unseal(t, "unseal", "wrong"); err == nil {
 		t.Fatal("a wrong password must be refused")
 	}
-	if err := unseal("pass", false); err != nil {
+	if err := unseal(t, "unseal", "pass"); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{"brave": "secret", "gitlab": "token"} {
@@ -254,7 +255,7 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	}
 }
 
-func TestFirstUnsealStoresMemoryAndSkipsBadCryptoboxes(t *testing.T) {
+func TestInitStoresMemoryAndSkipsBadCryptoboxes(t *testing.T) {
 	service(t)
 	if err := add(t, "early", "before"); err != nil {
 		t.Fatal(err)
@@ -266,12 +267,12 @@ func TestFirstUnsealStoresMemoryAndSkipsBadCryptoboxes(t *testing.T) {
 	if err := os.WriteFile(st.secretPath("junk"), []byte("junk\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := unseal("pass", true); err == nil || !strings.Contains(err.Error(), "junk") {
+	if err := unseal(t, "init", "pass"); err == nil || !strings.Contains(err.Error(), "junk") {
 		t.Fatalf("a bad cryptobox must be reported, got %v", err)
 	}
 	os.Remove(st.secretPath("junk"))
 	seal(t)
-	if err := unseal("pass", false); err != nil {
+	if err := unseal(t, "unseal", "pass"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := open(t, "early"); err != nil || got != "before" {
@@ -513,7 +514,7 @@ func TestNamesAreCheckedBeforeTheyReachTheService(t *testing.T) {
 
 func TestAddRefusesANameSealedOnDisk(t *testing.T) {
 	service(t)
-	if err := unseal("pass", true); err != nil {
+	if err := unseal(t, "init", "pass"); err != nil {
 		t.Fatal(err)
 	}
 	if err := add(t, "gitlab", "token"); err != nil {
@@ -525,21 +526,11 @@ func TestAddRefusesANameSealedOnDisk(t *testing.T) {
 	}
 }
 
-func TestConfirmationCannotBeTyped(t *testing.T) {
-	service(t)
-	if _, err := run(t, "pass", "unseal", "--confirmed"); err == nil || err.Error() != errUsage.Error() {
-		t.Fatalf("got %v", err)
-	}
-	if _, err := os.Stat(userStore().unsealPath()); !os.IsNotExist(err) {
-		t.Fatal("a typed --confirmed must set no password")
-	}
-}
-
 func TestSyntaxIsCheckedBeforeStdin(t *testing.T) {
 	previous := sockPath
 	sockPath = filepath.Join(t.TempDir(), "none")
 	defer func() { sockPath = previous }()
-	for _, args := range [][]string{{"add", "BAD"}, {"add"}, {"unseal", "extra"}, {"frob"}, {"open", "a", "b"}} {
+	for _, args := range [][]string{{"add", "BAD"}, {"add"}, {"unseal", "extra"}, {"init", "extra"}, {"frob"}, {"open", "a", "b"}} {
 		if _, err := run(t, "secret", args...); err == nil || strings.Contains(err.Error(), "not running") {
 			t.Fatalf("%v must be refused before the service is asked, got %v", args, err)
 		}

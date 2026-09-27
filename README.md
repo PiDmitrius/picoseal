@@ -21,6 +21,7 @@ away and forgets how, while cryptoboxes sent to `pubkey` still open.
 
     picoseal install          Create /etc/picoseal and copy the binary to /usr/local/bin
     picoseal serve            Run the service that holds the secrets
+    picoseal init             Set the store password and store on disk the secrets in memory
     picoseal unseal           Ask the store password and load the secrets on disk into memory
     picoseal seal             Drop every secret from memory
     picoseal add <name>       Keep stdin as <name>
@@ -32,7 +33,7 @@ away and forgets how, while cryptoboxes sent to `pubkey` still open.
     picoseal import           Open the cryptobox on stdin and print the secret
     picoseal --user ...       Use the caller's own space instead of root's
 
-`add`, `export`, `import` and `unseal` read one unechoed line from a terminal,
+`add`, `export`, `import`, `init` and `unseal` read one unechoed line from a terminal,
 under 4095 bytes, or a whole pipe, up to 65536 bytes of secret counting the one
 trailing newline they strip; a piped cryptobox may wrap or end in CRLF.
 `add` refuses to replace an existing name: rotate with `remove` then `add`.
@@ -91,17 +92,17 @@ and the run of the service it was made for.
 
 ## A store on disk
 
-    sudo picoseal unseal
-    picoseal --user unseal
+    sudo picoseal init
+    picoseal --user init
 
 Root's store is `/etc/picoseal`; a user's is `/etc/picoseal/users/<uid>`, which
-only the service reads. The first `unseal` asks the password twice, on a
-terminal, and writes to the store the secrets already in memory; from then on
-`add` also writes every secret there, even before the next `unseal`. After the
-service restarts or `seal`, one `unseal` loads them all again. The password and
+only the service reads. `init` sets the password, asking it twice on a terminal
+and once from a pipe, and writes to the store the secrets already in memory;
+from then on `add` also writes every secret there. After the service restarts
+or `seal`, one `unseal` loads them all again. The password and
 the store key are both needed: a copy of the disk without the password opens
-nothing, and neither does the password alone. `unseal` needs about 1 GiB of
-memory for a moment.
+nothing, and neither does the password alone. `init` and `unseal` need about
+1 GiB of memory for a moment.
 
 ## Nesting
 

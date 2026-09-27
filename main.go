@@ -5,8 +5,8 @@
 // 0, and with --user the caller's own; every other command is a client of that
 // socket, except export, which puts stdin in a cryptobox for a public key
 // alone.
-// A space whose store holds an unseal file also keeps every secret on disk as
-// a cryptobox for U, which Argon2id derives from a password salted with the
+// A space whose store init has set up also keeps every secret on disk as a
+// cryptobox for U, which Argon2id derives from a password salted with the
 // store key; a short-lived child computes it so that the service's locked
 // memory stays small, and the service forgets U once the store is loaded.
 // Stores live under /etc/picoseal, root's at the top and each user's in
@@ -29,7 +29,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	"golang.org/x/crypto/nacl/box"
@@ -52,7 +51,6 @@ var (
 	nameRe      = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 	errUsage    = errors.New("usage")
 	errRoot     = errors.New("this runs as root: use sudo")
-	errConfirm  = errors.New("a new store: confirm the password")
 	argonMemory = uint32(1 << 20)
 )
 
@@ -104,12 +102,13 @@ them on unseal.
 
   install          Create %s and copy the binary to %s
   serve            Run the service that holds the secrets
-  unseal           Ask the store password, the first time twice and on a
-                   terminal, load the secrets on disk into memory and store on
-                   disk those only in memory
+  init             Set the store password, asked twice on a terminal, and store
+                   on disk the secrets in memory
+  unseal           Ask the store password and load the secrets on disk into
+                   memory
   seal             Drop every secret from memory
-  add <name>       Keep stdin as <name>, on disk too if the store is unsealed
-                   once: one unechoed line from a terminal, under %d bytes, or
+  add <name>       Keep stdin as <name>, on disk too if the store is set up:
+                   one unechoed line from a terminal, under %d bytes, or
                    a whole pipe, up to %d bytes counting the one trailing
                    newline it strips
   open <name>      Print the secret
@@ -209,17 +208,14 @@ var reads = map[string]struct {
 }{
 	"add":    {"Secret", maxValue},
 	"import": {"Cryptobox", 2 * maxBox},
+	"init":   {"Password", maxValue},
 	"unseal": {"Password", maxValue},
 }
 
 // remote checks the arguments with the service's own parser before it reads
-// stdin, sends them to the service and prints its answer; a first unseal
-// comes back once to confirm the password.
+// stdin, sends them to the service and prints its answer.
 func remote(args []string, command string) error {
-	if slices.Contains(args, "--confirmed") {
-		return errUsage
-	}
-	if _, _, _, _, err := parse(args); err != nil {
+	if _, _, _, err := parse(args); err != nil {
 		return err
 	}
 	var payload []byte
@@ -229,20 +225,16 @@ func remote(args []string, command string) error {
 			return err
 		}
 	}
-	body, err := request(args, payload)
-	if command == "unseal" && err != nil && err.Error() == errConfirm.Error() {
-		if !isTerminal() {
-			return errors.New("the first unseal sets the password and needs a terminal to confirm it")
-		}
-		again, againErr := readSecret("Password again", maxValue)
-		if againErr != nil {
-			return againErr
+	if command == "init" && isTerminal() {
+		again, err := readSecret("Password again", maxValue)
+		if err != nil {
+			return err
 		}
 		if !bytes.Equal(again, payload) {
 			return errors.New("passwords differ")
 		}
-		body, err = request(append(slices.Clone(args), "--confirmed"), payload)
 	}
+	body, err := request(args, payload)
 	if err != nil {
 		return err
 	}

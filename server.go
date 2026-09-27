@@ -189,7 +189,7 @@ func readFile(path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, 2*maxBox))
 }
 
-// unsealKey returns the public U of a store unsealed once, or nil.
+// unsealKey returns the public U of a store init has set up, or nil.
 func (st store) unsealKey() (*[32]byte, error) {
 	data, err := readFile(st.unsealPath())
 	if errors.Is(err, os.ErrNotExist) {
@@ -372,7 +372,7 @@ func (s *server) answer(conn *net.UnixConn, uid int) ([]byte, error) {
 			return nil, err
 		}
 	}
-	user, command, name, confirmed, err := parse(args)
+	user, command, name, err := parse(args)
 	if err != nil {
 		return nil, err
 	}
@@ -385,38 +385,37 @@ func (s *server) answer(conn *net.UnixConn, uid int) ([]byte, error) {
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
-	return s.do(uid, user, command, name, confirmed, payload[:n])
+	return s.do(uid, user, command, name, payload[:n])
 }
 
-// parse reads [--user] <command> [<name>] as the usage text lists them; an
-// unseal the client repeats to confirm a new password ends in --confirmed.
-func parse(args []string) (user bool, command, name string, confirmed bool, err error) {
+// parse reads [--user] <command> [<name>] as the usage text lists them.
+func parse(args []string) (user bool, command, name string, err error) {
 	if len(args) > 0 && args[0] == "--user" {
 		user, args = true, args[1:]
 	}
 	if len(args) == 0 {
-		return false, "", "", false, errUsage
+		return false, "", "", errUsage
 	}
 	command, args = args[0], args[1:]
-	switch {
-	case command == "add" || command == "open" || command == "remove":
+	switch command {
+	case "add", "open", "remove":
 		if len(args) != 1 {
-			return false, "", "", false, errUsage
+			return false, "", "", errUsage
 		}
 		if err := checkName(args[0]); err != nil {
-			return false, "", "", false, err
+			return false, "", "", err
 		}
-		return user, command, args[0], false, nil
-	case command == "unseal" && len(args) == 1 && args[0] == "--confirmed":
-		return user, command, "", true, nil
-	case (command == "list" || command == "seal" || command == "pubkey" || command == "import" || command == "unseal") && len(args) == 0:
-		return user, command, "", false, nil
+		return user, command, args[0], nil
+	case "list", "seal", "pubkey", "import", "init", "unseal":
+		if len(args) == 0 {
+			return user, command, "", nil
+		}
 	}
-	return false, "", "", false, errUsage
+	return false, "", "", errUsage
 }
 
 // do runs a command in the space the uid and --user select.
-func (s *server) do(uid int, user bool, command, name string, confirmed bool, payload []byte) ([]byte, error) {
+func (s *server) do(uid int, user bool, command, name string, payload []byte) ([]byte, error) {
 	switch {
 	case user && uid == 0:
 		return nil, errors.New("--user is for a user other than root")
@@ -478,8 +477,8 @@ func (s *server) do(uid int, user bool, command, name string, confirmed bool, pa
 	case "seal":
 		sp.seal()
 		return nil, nil
-	case "unseal":
-		return nil, sp.unseal(st, payload, confirmed, &s.derive)
+	case "init", "unseal":
+		return nil, sp.unseal(st, payload, command == "init", &s.derive)
 	}
 	return nil, errUsage
 }
@@ -563,10 +562,10 @@ func (sp *space) seal() {
 	}
 }
 
-// unseal checks the password against the store's public U, or sets it on a
-// confirmed first unseal, loads every cryptobox on disk that is not in memory
-// yet and stores on disk every secret that is only in memory.
-func (sp *space) unseal(st store, password []byte, confirmed bool, derive *sync.Mutex) error {
+// unseal checks the password against the store's public U, or on init sets
+// it, loads every cryptobox on disk that is not in memory yet and stores on
+// disk every secret that is only in memory.
+func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex) error {
 	if len(password) == 0 {
 		return errors.New("empty password")
 	}
@@ -574,8 +573,11 @@ func (sp *space) unseal(st store, password []byte, confirmed bool, derive *sync.
 	if err != nil {
 		return err
 	}
-	if unsealPub == nil && !confirmed {
-		return errConfirm
+	switch {
+	case init && unsealPub != nil:
+		return errors.New("the store exists")
+	case !init && unsealPub == nil:
+		return errors.New("no store: run picoseal init")
 	}
 	if err := st.ensureKey(); err != nil {
 		return err
@@ -595,7 +597,7 @@ func (sp *space) unseal(st store, password []byte, confirmed bool, derive *sync.
 		return err
 	}
 	defer clear(priv[:])
-	if unsealPub == nil {
+	if init {
 		if err := writeNew(st.unsealPath(), encodeKey(pub)); err != nil {
 			return err
 		}
@@ -681,7 +683,7 @@ func cmdDerive(args []string) error {
 	}
 	if limit, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
 		if max, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64); err == nil && max < kib<<10+64<<20 {
-			return fmt.Errorf("unseal needs %d MiB of memory, the cgroup allows %d MiB", kib>>10+64, max>>20)
+			return fmt.Errorf("the store password needs %d MiB of memory, the cgroup allows %d MiB", kib>>10+64, max>>20)
 		}
 	}
 	in, err := io.ReadAll(io.LimitReader(os.Stdin, 32+maxValue))
