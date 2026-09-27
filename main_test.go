@@ -73,35 +73,42 @@ func output(t *testing.T, f *os.File) string {
 	return string(data)
 }
 
+// run gives input to the client as stdin and runs it as a --user caller.
+func run(t *testing.T, input string, args ...string) (string, error) {
+	t.Helper()
+	redirect(t, &os.Stdin, input)
+	out := redirect(t, &os.Stdout, "")
+	err := remote(append([]string{"--user"}, args...), args[0])
+	return output(t, out), err
+}
+
 func add(t *testing.T, name, value string) error {
 	t.Helper()
-	redirect(t, &os.Stdin, value)
-	return cmdAdd([]string{name})
+	_, err := run(t, value, "add", name)
+	return err
 }
 
 func open(t *testing.T, name string) (string, error) {
 	t.Helper()
-	out := redirect(t, &os.Stdout, "")
-	err := cmdOpen([]string{name})
-	return output(t, out), err
+	return run(t, "", "open", name)
 }
 
 func list(t *testing.T) string {
 	t.Helper()
-	out := redirect(t, &os.Stdout, "")
-	if err := cmdList(nil); err != nil {
+	out, err := run(t, "", "list")
+	if err != nil {
 		t.Fatal(err)
 	}
-	return output(t, out)
+	return out
 }
 
 func pubkey(t *testing.T) string {
 	t.Helper()
-	out := redirect(t, &os.Stdout, "")
-	if err := cmdPubkey(nil); err != nil {
+	out, err := run(t, "", "pubkey")
+	if err != nil {
 		t.Fatal(err)
 	}
-	return strings.TrimSpace(output(t, out))
+	return strings.TrimSpace(out)
 }
 
 func export(t *testing.T, key, value string) string {
@@ -116,18 +123,28 @@ func export(t *testing.T, key, value string) string {
 
 func importBox(t *testing.T, cryptobox string) (string, error) {
 	t.Helper()
-	out := redirect(t, &os.Stdout, "")
-	redirect(t, &os.Stdin, cryptobox)
-	err := cmdImport(nil)
-	return output(t, out), err
+	return run(t, cryptobox, "import")
+}
+
+func seal(t *testing.T) {
+	t.Helper()
+	if _, err := run(t, "", "seal"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func remove(t *testing.T, name string) error {
+	t.Helper()
+	_, err := run(t, "", "remove", name)
+	return err
 }
 
 func unseal(password string, confirmed bool) error {
-	name := ""
+	args := []string{"--user", "unseal"}
 	if confirmed {
-		name = "confirmed"
+		args = append(args, "--confirmed")
 	}
-	_, err := request("unseal", name, []byte(password))
+	_, err := request(args, []byte(password))
 	return err
 }
 
@@ -146,7 +163,7 @@ func TestMemoryRoundTrip(t *testing.T) {
 	if err := add(t, "brave", "second"); err == nil {
 		t.Fatal("add must refuse to replace a secret")
 	}
-	if err := cmdRemove([]string{"brave"}); err != nil {
+	if err := remove(t, "brave"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := open(t, "brave"); err == nil {
@@ -159,10 +176,10 @@ func TestMemoryRoundTrip(t *testing.T) {
 
 func TestSpacesFollowTheKernelUID(t *testing.T) {
 	s := newServer()
-	if _, err := s.do(1000, false, "list", "-", nil); err == nil || err.Error() != errRoot.Error() {
+	if _, err := s.do(1000, false, "list", "-", false, nil); err == nil || err.Error() != errRoot.Error() {
 		t.Fatalf("a user without --user must be sent to sudo, got %v", err)
 	}
-	if _, err := s.do(0, true, "list", "-", nil); err == nil {
+	if _, err := s.do(0, true, "list", "-", false, nil); err == nil {
 		t.Fatal("root must refuse --user")
 	}
 	previous := base
@@ -171,13 +188,13 @@ func TestSpacesFollowTheKernelUID(t *testing.T) {
 	if err := os.Chmod(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.do(1000, true, "add", "brave", []byte("secret")); err != nil {
+	if _, err := s.do(1000, true, "add", "brave", false, []byte("secret")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.do(1001, true, "open", "brave", nil); err == nil {
+	if _, err := s.do(1001, true, "open", "brave", false, nil); err == nil {
 		t.Fatal("another uid must not see the secret")
 	}
-	if _, err := s.do(1000, true, "open", "../brave", nil); err == nil {
+	if _, err := s.do(1000, true, "open", "../brave", false, nil); err == nil {
 		t.Fatal("a bad name must be refused")
 	}
 }
@@ -188,9 +205,7 @@ func TestSealKeepsTheSessionKey(t *testing.T) {
 	if err := add(t, "brave", "secret"); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdSeal(nil); err != nil {
-		t.Fatal(err)
-	}
+	seal(t)
 	if _, err := open(t, "brave"); err == nil {
 		t.Fatal("seal must drop the secrets")
 	}
@@ -210,9 +225,7 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if err := add(t, "brave", "secret"); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdSeal(nil); err != nil {
-		t.Fatal(err)
-	}
+	seal(t)
 	if _, err := open(t, "brave"); err == nil || !strings.Contains(err.Error(), "unseal") {
 		t.Fatalf("a sealed secret must ask for unseal, got %v", err)
 	}
@@ -233,7 +246,7 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 			t.Fatalf("%s: got %q, %v", name, got, err)
 		}
 	}
-	if err := cmdRemove([]string{"brave"}); err != nil {
+	if err := remove(t, "brave"); err != nil {
 		t.Fatal(err)
 	}
 	if got := list(t); got != "gitlab\n" {
@@ -257,9 +270,7 @@ func TestFirstUnsealStoresMemoryAndSkipsBadCryptoboxes(t *testing.T) {
 		t.Fatalf("a bad cryptobox must be reported, got %v", err)
 	}
 	os.Remove(st.secretPath("junk"))
-	if err := cmdSeal(nil); err != nil {
-		t.Fatal(err)
-	}
+	seal(t)
 	if err := unseal("pass", false); err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +285,7 @@ func TestMalformedRequestIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Fprint(conn, "list 7\n")
+	fmt.Fprint(conn, "2\x00--bogus\x00list\x00")
 	conn.(*net.UnixConn).CloseWrite()
 	reply, _ := io.ReadAll(conn)
 	if !strings.HasPrefix(string(reply), "error ") {
@@ -364,14 +375,14 @@ func TestNoServiceIsSaidPlainly(t *testing.T) {
 	previous := sockPath
 	sockPath = filepath.Join(t.TempDir(), "none")
 	defer func() { sockPath = previous }()
-	if _, err := request("list", "", nil); err == nil || !strings.Contains(err.Error(), "not running") {
+	if _, err := request([]string{"--user", "list"}, nil); err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("got %v", err)
 	}
 }
 
 func TestOversizedRequestIsRefused(t *testing.T) {
 	service(t)
-	if _, err := request("add", "big", []byte(strings.Repeat("A", maxValue+1))); err == nil || !strings.Contains(err.Error(), "too large") {
+	if _, err := request([]string{"--user", "add", "big"}, []byte(strings.Repeat("A", maxValue+1))); err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("got %v", err)
 	}
 	if got := list(t); got != "" {
@@ -408,7 +419,7 @@ func TestStoreBehindALinkIsRefused(t *testing.T) {
 	if err := os.Symlink(base, st.dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := request("list", "", nil); err == nil || !strings.Contains(err.Error(), "not a store") {
+	if _, err := request([]string{"--user", "list"}, nil); err == nil || !strings.Contains(err.Error(), "not a store") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -429,13 +440,13 @@ func TestIdleClientsHoldOnlyTheirOwnUID(t *testing.T) {
 		idle = append(idle, c)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if _, err := request("list", "", nil); err == nil {
+	if _, err := request([]string{"--user", "list"}, nil); err == nil {
 		t.Fatal("a uid past its share of connections must be turned away")
 	}
 	idle[0].Close()
 	idle = idle[1:]
 	time.Sleep(50 * time.Millisecond)
-	if _, err := request("list", "", nil); err != nil {
+	if _, err := request([]string{"--user", "list"}, nil); err != nil {
 		t.Fatalf("a freed connection must serve again: %v", err)
 	}
 }
@@ -477,7 +488,7 @@ func TestLinkAboveTheStoreIsRefused(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(base, "users")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := request("list", "", nil); err == nil || !strings.Contains(err.Error(), "not a store") {
+	if _, err := request([]string{"--user", "list"}, nil); err == nil || !strings.Contains(err.Error(), "not a store") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -491,7 +502,7 @@ func TestNamesAreCheckedBeforeTheyReachTheService(t *testing.T) {
 		if _, err := open(t, name); err == nil || !strings.Contains(err.Error(), "name must match") {
 			t.Fatalf("open %q: %v", name, err)
 		}
-		if err := cmdRemove([]string{name}); err == nil || !strings.Contains(err.Error(), "name must match") {
+		if err := remove(t, name); err == nil || !strings.Contains(err.Error(), "name must match") {
 			t.Fatalf("remove %q: %v", name, err)
 		}
 	}
@@ -508,10 +519,29 @@ func TestAddRefusesANameSealedOnDisk(t *testing.T) {
 	if err := add(t, "gitlab", "token"); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdSeal(nil); err != nil {
-		t.Fatal(err)
-	}
+	seal(t)
 	if err := add(t, "gitlab", "other"); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestConfirmationCannotBeTyped(t *testing.T) {
+	service(t)
+	if _, err := run(t, "pass", "unseal", "--confirmed"); err == nil || err.Error() != errUsage.Error() {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Stat(userStore().unsealPath()); !os.IsNotExist(err) {
+		t.Fatal("a typed --confirmed must set no password")
+	}
+}
+
+func TestSyntaxIsCheckedBeforeStdin(t *testing.T) {
+	previous := sockPath
+	sockPath = filepath.Join(t.TempDir(), "none")
+	defer func() { sockPath = previous }()
+	for _, args := range [][]string{{"add", "BAD"}, {"add"}, {"unseal", "extra"}, {"frob"}, {"open", "a", "b"}} {
+		if _, err := run(t, "secret", args...); err == nil || strings.Contains(err.Error(), "not running") {
+			t.Fatalf("%v must be refused before the service is asked, got %v", args, err)
+		}
 	}
 }

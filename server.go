@@ -24,15 +24,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// A request is one line "<command> <user 0|1> <name or ->" and the payload
-// up to the end of the stream; the answer is "ok" or "error <message>" on the
-// first line and the payload after it. A client gets a few seconds to send
-// its request, and each uid but root only so many at once, so a stuck or
-// hostile client cannot hold the service for anyone else. Each space answers
-// one request at a time; the space table and the Argon2 child are the only
-// things spaces share.
-// Stored values rest in locked pages; a request, its answer and the Argon2
-// child hold working copies in ordinary memory, cleared once they are done.
+// A request is the number of the client's arguments and the arguments, each
+// ended by a zero byte, then the payload up to the end of the stream. parse
+// is the one parser of those arguments: the client runs it before it reads
+// stdin, and the service runs it again on what arrives. The answer is "ok" or
+// "error <message>" on the first line and the payload after it. A client gets
+// a few seconds to send its request, and each uid but root only so many at
+// once, so a stuck or hostile client cannot hold the service for anyone else.
+// Each space answers one request at a time; the space table and the Argon2
+// child are the only things spaces share. Stored values rest in locked pages;
+// a request, its answer and the Argon2 child hold working copies in ordinary
+// memory, cleared once they are done.
 
 const (
 	maxClients    = 256
@@ -313,8 +315,7 @@ func (s *server) handle(conn *net.UnixConn) {
 	}
 	s.mu.Unlock()
 	if busy {
-		conn.SetReadDeadline(time.Now().Add(time.Second))
-		io.Copy(io.Discard, io.LimitReader(conn, 2*maxBox+256))
+		drain(conn)
 		io.WriteString(conn, "error too many requests at once\n")
 		return
 	}
@@ -328,6 +329,7 @@ func (s *server) handle(conn *net.UnixConn) {
 	defer clear(reply)
 	conn.SetWriteDeadline(time.Now().Add(timeout))
 	if err != nil {
+		drain(conn)
 		fmt.Fprintf(conn, "error %s\n", strings.ReplaceAll(err.Error(), "\n", "; "))
 		return
 	}
@@ -336,42 +338,85 @@ func (s *server) handle(conn *net.UnixConn) {
 	}
 }
 
-// payloadLimit is the most each command takes after its header.
-var payloadLimit = map[string]int{
-	"add":    maxValue,
-	"unseal": maxValue,
-	"import": 2 * maxBox,
+// drain reads what is left of a refused request, so the client gets the
+// answer rather than a reset connection.
+func drain(conn *net.UnixConn) {
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	io.Copy(io.Discard, conn)
 }
 
 func (s *server) answer(conn *net.UnixConn, uid int) ([]byte, error) {
-	header := make([]byte, 0, 128)
-	for one := make([]byte, 1); len(header) < cap(header); {
-		if _, err := io.ReadFull(conn, one); err != nil {
-			return nil, errors.New("malformed request")
+	field := func() (string, error) {
+		var arg []byte
+		for one := make([]byte, 1); ; {
+			if _, err := io.ReadFull(conn, one); err != nil || len(arg) == 128 {
+				return "", errors.New("malformed request")
+			}
+			if one[0] == 0 {
+				return string(arg), nil
+			}
+			arg = append(arg, one[0])
 		}
-		if one[0] == '\n' {
-			break
-		}
-		header = append(header, one[0])
 	}
-	fields := strings.Fields(string(header))
-	if len(fields) != 3 || (fields[1] != "0" && fields[1] != "1") {
+	count, err := field()
+	if err != nil {
+		return nil, err
+	}
+	n, err := strconv.Atoi(count)
+	if err != nil || n < 0 || n > 8 {
 		return nil, errors.New("malformed request")
 	}
-	payload := make([]byte, payloadLimit[fields[0]]+1)
+	args := make([]string, n)
+	for i := range args {
+		if args[i], err = field(); err != nil {
+			return nil, err
+		}
+	}
+	user, command, name, confirmed, err := parse(args)
+	if err != nil {
+		return nil, err
+	}
+	payload := make([]byte, reads[command].limit+1)
 	defer clear(payload)
-	n, err := io.ReadFull(conn, payload)
+	n, err = io.ReadFull(conn, payload)
 	if n == len(payload) {
 		return nil, errors.New("request too large")
 	}
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
-	return s.do(uid, fields[1] == "1", fields[0], fields[2], payload[:n])
+	return s.do(uid, user, command, name, confirmed, payload[:n])
+}
+
+// parse reads [--user] <command> [<name>] as the usage text lists them; an
+// unseal the client repeats to confirm a new password ends in --confirmed.
+func parse(args []string) (user bool, command, name string, confirmed bool, err error) {
+	if len(args) > 0 && args[0] == "--user" {
+		user, args = true, args[1:]
+	}
+	if len(args) == 0 {
+		return false, "", "", false, errUsage
+	}
+	command, args = args[0], args[1:]
+	switch {
+	case command == "add" || command == "open" || command == "remove":
+		if len(args) != 1 {
+			return false, "", "", false, errUsage
+		}
+		if err := checkName(args[0]); err != nil {
+			return false, "", "", false, err
+		}
+		return user, command, args[0], false, nil
+	case command == "unseal" && len(args) == 1 && args[0] == "--confirmed":
+		return user, command, "", true, nil
+	case (command == "list" || command == "seal" || command == "pubkey" || command == "import" || command == "unseal") && len(args) == 0:
+		return user, command, "", false, nil
+	}
+	return false, "", "", false, errUsage
 }
 
 // do runs a command in the space the uid and --user select.
-func (s *server) do(uid int, user bool, command, name string, payload []byte) ([]byte, error) {
+func (s *server) do(uid int, user bool, command, name string, confirmed bool, payload []byte) ([]byte, error) {
 	switch {
 	case user && uid == 0:
 		return nil, errors.New("--user is for a user other than root")
@@ -384,12 +429,6 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 	}
 	if err := st.check(); err != nil {
 		return nil, err
-	}
-	switch command {
-	case "add", "open", "remove":
-		if err := checkName(name); err != nil {
-			return nil, err
-		}
 	}
 	s.mu.Lock()
 	sp := s.spaces[uid]
@@ -440,9 +479,9 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 		sp.seal()
 		return nil, nil
 	case "unseal":
-		return nil, sp.unseal(st, payload, name == "confirmed", &s.derive)
+		return nil, sp.unseal(st, payload, confirmed, &s.derive)
 	}
-	return nil, fmt.Errorf("unknown command %q", command)
+	return nil, errUsage
 }
 
 func (sp *space) add(st store, name string, value []byte) error {

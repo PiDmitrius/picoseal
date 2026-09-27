@@ -29,6 +29,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"golang.org/x/crypto/nacl/box"
@@ -58,35 +59,33 @@ var (
 func main() {
 	unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0)
 	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "--user" {
-		asUser = true
-		args = args[1:]
+	flags := 0
+	for flags < len(args) && strings.HasPrefix(args[flags], "--") {
+		flags++
 	}
-	if len(args) == 0 {
+	if flags == len(args) {
 		usage()
 		os.Exit(1)
 	}
-	commands := map[string]func([]string) error{
+	var err error
+	if local, ok := map[string]func([]string) error{
 		"install": cmdInstall,
 		"serve":   cmdServe,
 		"derive":  cmdDerive,
-		"unseal":  cmdUnseal,
-		"seal":    cmdSeal,
-		"add":     cmdAdd,
-		"open":    cmdOpen,
-		"list":    cmdList,
-		"remove":  cmdRemove,
-		"pubkey":  cmdPubkey,
 		"export":  cmdExport,
-		"import":  cmdImport,
+	}[args[flags]]; ok {
+		for _, flag := range args[:flags] {
+			if flag != "--user" {
+				usage()
+				os.Exit(1)
+			}
+			asUser = true
+		}
+		err = local(args[flags+1:])
+	} else {
+		err = remote(args, args[flags])
 	}
-	command, ok := commands[args[0]]
-	if !ok {
-		usage()
-		os.Exit(1)
-	}
-	err := command(args[1:])
-	if errors.Is(err, errUsage) {
+	if err != nil && err.Error() == errUsage.Error() {
 		usage()
 		os.Exit(1)
 	}
@@ -203,21 +202,67 @@ func cmdInstall(args []string) error {
 	return installBinary()
 }
 
-// request sends one command to the service and returns its answer.
-func request(command, name string, payload []byte) ([]byte, error) {
+// reads says what a command takes from stdin before it asks the service.
+var reads = map[string]struct {
+	prompt string
+	limit  int
+}{
+	"add":    {"Secret", maxValue},
+	"import": {"Cryptobox", 2 * maxBox},
+	"unseal": {"Password", maxValue},
+}
+
+// remote checks the arguments with the service's own parser before it reads
+// stdin, sends them to the service and prints its answer; a first unseal
+// comes back once to confirm the password.
+func remote(args []string, command string) error {
+	if slices.Contains(args, "--confirmed") {
+		return errUsage
+	}
+	if _, _, _, _, err := parse(args); err != nil {
+		return err
+	}
+	var payload []byte
+	if in, ok := reads[command]; ok {
+		var err error
+		if payload, err = readSecret(in.prompt, in.limit); err != nil {
+			return err
+		}
+	}
+	body, err := request(args, payload)
+	if command == "unseal" && err != nil && err.Error() == errConfirm.Error() {
+		if !isTerminal() {
+			return errors.New("the first unseal sets the password and needs a terminal to confirm it")
+		}
+		again, againErr := readSecret("Password again", maxValue)
+		if againErr != nil {
+			return againErr
+		}
+		if !bytes.Equal(again, payload) {
+			return errors.New("passwords differ")
+		}
+		body, err = request(append(slices.Clone(args), "--confirmed"), payload)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(body)
+	return err
+}
+
+// request sends the number of arguments and each argument, every one ended
+// by a zero byte, then the payload, and returns the service's answer.
+func request(args []string, payload []byte) ([]byte, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		return nil, errors.New("picoseal serve is not running")
 	}
 	defer conn.Close()
-	if name == "" {
-		name = "-"
+	header := fmt.Sprintf("%d\x00", len(args))
+	for _, arg := range args {
+		header += arg + "\x00"
 	}
-	user := 0
-	if asUser {
-		user = 1
-	}
-	if _, err := fmt.Fprintf(conn, "%s %d %s\n", command, user, name); err != nil {
+	if _, err := io.WriteString(conn, header); err != nil {
 		return nil, err
 	}
 	if _, err := conn.Write(payload); err != nil {
@@ -233,109 +278,6 @@ func request(command, name string, payload []byte) ([]byte, error) {
 		return nil, errors.New(strings.TrimPrefix(string(status), "error "))
 	}
 	return body, nil
-}
-
-func printed(body []byte, err error) error {
-	if err != nil {
-		return err
-	}
-	_, err = os.Stdout.Write(body)
-	return err
-}
-
-func cmdUnseal(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	password, err := readSecret("Password", maxValue)
-	if err != nil {
-		return err
-	}
-	_, err = request("unseal", "", password)
-	if err == nil || err.Error() != errConfirm.Error() {
-		return err
-	}
-	if !isTerminal() {
-		return errors.New("the first unseal sets the password and needs a terminal to confirm it")
-	}
-	again, err := readSecret("Password again", maxValue)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(again, password) {
-		return errors.New("passwords differ")
-	}
-	_, err = request("unseal", "confirmed", password)
-	return err
-}
-
-func cmdSeal(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	_, err := request("seal", "", nil)
-	return err
-}
-
-func cmdAdd(args []string) error {
-	if len(args) != 1 {
-		return errUsage
-	}
-	if err := checkName(args[0]); err != nil {
-		return err
-	}
-	value, err := readSecret("Secret", maxValue)
-	if err != nil {
-		return err
-	}
-	_, err = request("add", args[0], value)
-	return err
-}
-
-func cmdOpen(args []string) error {
-	if len(args) != 1 {
-		return errUsage
-	}
-	if err := checkName(args[0]); err != nil {
-		return err
-	}
-	return printed(request("open", args[0], nil))
-}
-
-func cmdList(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	return printed(request("list", "", nil))
-}
-
-func cmdRemove(args []string) error {
-	if len(args) != 1 {
-		return errUsage
-	}
-	if err := checkName(args[0]); err != nil {
-		return err
-	}
-	_, err := request("remove", args[0], nil)
-	return err
-}
-
-func cmdPubkey(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	return printed(request("pubkey", "", nil))
-}
-
-func cmdImport(args []string) error {
-	if len(args) != 0 {
-		return errUsage
-	}
-	data, err := readSecret("Cryptobox", 2*maxBox)
-	if err != nil {
-		return err
-	}
-	return printed(request("import", "", data))
 }
 
 func cmdExport(args []string) error {
