@@ -19,13 +19,13 @@ button { margin-top: .75rem; padding: .4rem 1rem; font: inherit; }
 </head>
 <body>
 <h1>picoseal</h1>
-<p>Seals a secret for one picoseal session. Everything happens in this page;
+<p>Seals a secret for one picoseal session, as <code>picoseal export</code> does. Everything happens in this page;
 the host opens the record with <code>picoseal import</code>.</p>
 <label for="pubkey">Public key</label>
 <input id="pubkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="output of picoseal pubkey">
 <label for="secret">Secret</label>
 <textarea id="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
-<button id="seal">Seal</button>
+<button id="export">Export</button>
 <p id="error"></p>
 <label for="record">Record</label>
 <textarea id="record" readonly></textarea>
@@ -108,7 +108,7 @@ function sealRecord(pubkey, text) {
 
 if (typeof document !== "undefined") {
   const $ = id => document.getElementById(id);
-  $("seal").onclick = () => {
+  $("export").onclick = () => {
     $("error").textContent = "";
     $("record").value = "";
     $("copy").disabled = true;

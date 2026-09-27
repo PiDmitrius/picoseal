@@ -10,7 +10,7 @@ that password, and loads them back on `unseal`.
 
 ## Commands
 
-    picoseal install          Create the store, its key and /usr/local/bin/picoseal
+    picoseal install          Create the store and its key; as root also /usr/local/bin/picoseal
     picoseal unseal           Ask the store password and load the store into memory
     picoseal seal             Drop every secret from memory
     picoseal add <name>       Keep stdin as <name>
@@ -22,18 +22,19 @@ that password, and loads them back on `unseal`.
     picoseal import           Print the stream in a record on stdin
     picoseal --dir <path> ... Use the store at <path>
 
-`add`, `export` and `import` read one unechoed line from a terminal, under 4095
-bytes, or a whole pipe, up to 65536 bytes of secret counting the one trailing
-newline they strip; a record may wrap or end in CRLF.
+`add`, `export`, `import` and `unseal` read one unechoed line from a terminal,
+under 4095 bytes, or a whole pipe, up to 65536 bytes of secret counting the one
+trailing newline they strip; a piped record may wrap or end in CRLF.
 `add` refuses to replace an existing name: rotate with `remove` then `add`.
 
 `add` and `open` keep secrets; `export` and `import` seal and open a stream for
 one session without keeping anything.
 
 Root uses the store `/etc/picoseal`; everyone else keeps secrets in memory only
-unless they pass `--dir`. Only root reads root's secrets. systemd-logind drops
-the memory of a user other than root when their last session ends, unless
-`loginctl enable-linger` keeps it.
+unless they pass `--dir`. Each store has its own session key and secrets, so
+`pubkey`, `import` and `open` for one delivery take the same `--dir`. Only root
+reads root's secrets. systemd-logind drops the memory of a user other than root
+when their last session ends, unless `loginctl enable-linger` keeps it.
 
 ## Memory only
 
@@ -44,7 +45,7 @@ and are delivered again after it.
     picoseal export <pubkey> < token > gitlab.rec         # anywhere, no root
     sudo picoseal import < gitlab.rec | sudo picoseal add gitlab   # target
 
-`seal.html` does what `export` does in a browser, offline and self-contained:
+`export.html` does what `export` does in a browser, offline and self-contained:
 paste the public key and the secret, then copy the record. Open it as a local
 file or from a server you trust over https; a page served over plain http from
 elsewhere can be rewritten on the way.
@@ -61,8 +62,9 @@ for.
 
 `install` creates `/etc/picoseal` with `secrets/` and `scripts/` and the store
 key, and copies the binary to `/usr/local/bin`; running it again keeps the key.
-The first `unseal` asks the password twice, on a terminal, and from then on
-`add` also writes every secret to `secrets/`, even before the next `unseal`.
+The first `unseal` asks the password twice, on a terminal, and writes to
+`secrets/` the secrets already in memory; from then on `add` also writes every
+secret there, even before the next `unseal`.
 After a reboot or `seal`, one `unseal` loads them all again. The password and
 the store key are both needed: a copy of the disk without the password opens
 nothing, and neither does the password alone. `unseal` needs about 1 GiB of

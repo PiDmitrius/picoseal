@@ -110,8 +110,9 @@ password also keeps them on disk and reloads them on unseal.
 
   install          Create the store with secrets/, scripts/ and its key; as
                    root also copy the binary to %s
-  unseal           Ask the store password, the first time twice, and load the
-                   secrets on disk into memory
+  unseal           Ask the store password, the first time twice and on a
+                   terminal, load the secrets on disk into memory and store on
+                   disk those only in memory
   seal             Drop every secret from memory
   add <name>       Keep stdin as <name>, on disk too if the store is unsealed
                    once: one unechoed line from a terminal, under %d bytes, or
@@ -127,14 +128,15 @@ password also keeps them on disk and reloads them on unseal.
                    read the same way
 
   --dir <path>     Use the store at <path>; root uses %s by default,
-                   everyone else keeps secrets in memory only
+                   everyone else keeps secrets in memory only. Each store has
+                   its own session key and secrets
 
 Only root reads root's secrets.
 `, binPath, maxTerminal, maxValue, defaultDir)
 }
 
 func keyPath() string    { return filepath.Join(dir, "key") }
-func markerPath() string { return filepath.Join(dir, "unseal") }
+func unsealPath() string { return filepath.Join(dir, "unseal") }
 
 func checkName(name string) error {
 	if !nameRe.MatchString(name) || name == "." || name == ".." {
@@ -171,12 +173,12 @@ func readKey(path string) (*[32]byte, error) {
 	return key, nil
 }
 
-// storeKey returns the public U of an unsealed-once store, or nil.
-func storeKey() (*[32]byte, error) {
+// unsealKey returns the public U of an unsealed-once store, or nil.
+func unsealKey() (*[32]byte, error) {
 	if dir == "" {
 		return nil, nil
 	}
-	pub, err := readKey(markerPath())
+	pub, err := readKey(unsealPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -325,12 +327,12 @@ func cmdUnseal(args []string) error {
 	if dir == "" {
 		return errNoStore
 	}
-	marker, err := storeKey()
+	unsealPub, err := unsealKey()
 	if err != nil {
 		return err
 	}
 	var password []byte
-	if marker == nil {
+	if unsealPub == nil {
 		if !isTerminal() {
 			return errors.New("the first unseal sets the password and needs a terminal to confirm it")
 		}
@@ -347,23 +349,23 @@ func cmdUnseal(args []string) error {
 	} else if password, err = readSecret("Password", maxValue); err != nil {
 		return err
 	}
-	return unseal(password, marker)
+	return unseal(password, unsealPub)
 }
 
-// unseal checks password against the store's public U, or sets it when marker
+// unseal checks password against the store's public U, or sets it when unsealPub
 // is nil, loads every record on disk that is not in a slot yet and stores on
 // disk every slot that is not there yet.
-func unseal(password []byte, marker *[32]byte) error {
+func unseal(password []byte, unsealPub *[32]byte) error {
 	pub, priv, err := deriveU(password)
 	if err != nil {
 		return err
 	}
 	defer clear(priv[:])
-	if marker == nil {
-		if err := writeNew(markerPath(), encodeKey(pub)); err != nil {
+	if unsealPub == nil {
+		if err := writeNew(unsealPath(), encodeKey(pub)); err != nil {
 			return err
 		}
-	} else if *pub != *marker {
+	} else if *pub != *unsealPub {
 		return errors.New("wrong password")
 	}
 	entries, err := os.ReadDir(filepath.Join(dir, "secrets"))
@@ -433,7 +435,7 @@ func cmdAdd(args []string) error {
 	if err := checkName(name); err != nil {
 		return err
 	}
-	store, err := storeKey()
+	unsealPub, err := unsealKey()
 	if err != nil {
 		return err
 	}
@@ -444,8 +446,8 @@ func cmdAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if store != nil {
-		record, err := seal(store, value)
+	if unsealPub != nil {
+		record, err := seal(unsealPub, value)
 		if err != nil {
 			return err
 		}
@@ -455,22 +457,22 @@ func cmdAdd(args []string) error {
 	}
 	if err := storeSlot(name, value); err != nil {
 		// A concurrent unseal may have loaded the record just written.
-		if loaded, loadErr := loadSlot(name); store != nil && errors.Is(err, errExists) && loadErr == nil && bytes.Equal(loaded, value) {
+		if loaded, loadErr := loadSlot(name); unsealPub != nil && errors.Is(err, errExists) && loadErr == nil && bytes.Equal(loaded, value) {
 			return nil
 		}
-		if store != nil {
+		if unsealPub != nil {
 			os.Remove(secretPath(name))
 		}
 		return err
 	}
-	if store != nil {
+	if unsealPub != nil {
 		return nil
 	}
 	// A first unseal may have run since, without seeing this slot.
-	if store, err = storeKey(); store == nil || err != nil {
+	if unsealPub, err = unsealKey(); unsealPub == nil || err != nil {
 		return err
 	}
-	record, err := seal(store, value)
+	record, err := seal(unsealPub, value)
 	if err == nil {
 		if err = writeNew(secretPath(name), record); errors.Is(err, os.ErrExist) {
 			err = nil
@@ -603,7 +605,7 @@ func cmdImport(args []string) error {
 	if len(args) != 0 {
 		return errUsage
 	}
-	data, err := readSecret("Record", maxRecord)
+	data, err := readSecret("Record", 2*maxRecord)
 	if err != nil {
 		return err
 	}
@@ -634,7 +636,7 @@ func readSecret(prompt string, limit int) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(piped) > maxValue {
+		if len(piped) > limit {
 			return nil, fmt.Errorf("%s exceeds %d bytes", strings.ToLower(prompt), limit)
 		}
 		return nonEmpty(prompt, strings.TrimSuffix(string(piped), "\n"))

@@ -29,6 +29,7 @@ jobs:
             GOARCH=$arch go build -trimpath -ldflags="-s -w" \
               -o release/picoseal-${{ github.ref_name }}-linux-$arch .
           done
+          cp export.html release/
 
       - name: Publish
         uses: softprops/action-gh-release@v2

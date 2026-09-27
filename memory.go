@@ -33,7 +33,7 @@ const (
 )
 
 var (
-	errNoSession = errors.New("no session key: nothing was added since boot")
+	errNoSession = errors.New("no session key since boot: take a fresh pubkey")
 	errExists    = errors.New("already exists")
 	errDamaged   = errors.New("damaged")
 )

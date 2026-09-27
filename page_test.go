@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-// TestSealPageRecordsOpen runs the scripts of seal.html under node and opens
+// TestExportPageRecordsOpen runs the scripts of export.html under node and opens
 // what they seal with import.
-func TestSealPageRecordsOpen(t *testing.T) {
+func TestExportPageRecordsOpen(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node is not installed")
 	}
-	page, err := os.ReadFile("seal.html")
+	page, err := os.ReadFile("export.html")
 	if err != nil {
 		t.Fatal(err)
 	}

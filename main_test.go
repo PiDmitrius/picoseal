@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -171,14 +172,14 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if err := add(t, "gitlab", "token"); err != nil {
 		t.Fatal(err)
 	}
-	marker, err := storeKey()
+	unsealPub, err := unsealKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unseal([]byte("wrong"), marker); err == nil {
+	if err := unseal([]byte("wrong"), unsealPub); err == nil {
 		t.Fatal("a wrong password must be refused")
 	}
-	if err := unseal([]byte("pass"), marker); err != nil {
+	if err := unseal([]byte("pass"), unsealPub); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{"brave": "secret", "gitlab": "token"} {
@@ -325,13 +326,29 @@ func TestFirstUnsealStoresSlotsAndSkipsBadRecords(t *testing.T) {
 	if err := cmdSeal(nil); err != nil {
 		t.Fatal(err)
 	}
-	marker, _ := storeKey()
-	if err := unseal([]byte("pass"), marker); err != nil {
+	unsealPub, _ := unsealKey()
+	if err := unseal([]byte("pass"), unsealPub); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{"early": "before", "late": "after"} {
 		if got, err := open(t, name); err != nil || got != want {
 			t.Fatalf("%s: got %q, %v", name, got, err)
+		}
+	}
+}
+
+func TestLargestSecretTravels(t *testing.T) {
+	namespace(t, false)
+	secret := strings.Repeat("x", maxValue)
+	record := export(t, pubkey(t), secret)
+	var wrapped strings.Builder
+	for line := range slices.Chunk([]byte(strings.TrimSpace(record)), 76) {
+		wrapped.Write(line)
+		wrapped.WriteString("\r\n")
+	}
+	for _, record := range []string{record, wrapped.String()} {
+		if got, err := importRecord(t, record); err != nil || got != secret {
+			t.Fatalf("a %d-byte secret must travel: %v", maxValue, err)
 		}
 	}
 }
