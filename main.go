@@ -48,28 +48,31 @@ const (
 )
 
 var (
-	// dir is the store; empty means memory only, the default for non-root.
+	// dir is the store; empty means memory only, the default with --user.
 	dir         string
 	nameRe      = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 	errUsage    = errors.New("usage")
-	errNoStore  = errors.New("no store: pass --dir")
+	errNoStore  = errors.New("no store: pass --dir with --user")
 	argonMemory = uint32(1 << 20)
 )
 
 func main() {
 	unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0)
-	args := os.Args[1:]
-	if os.Geteuid() == 0 {
-		dir = defaultDir
+	user, named, args, ok := parseFlags(os.Args[1:])
+	if !ok {
+		usage()
+		os.Exit(1)
 	}
-	if len(args) >= 2 && args[0] == "--dir" {
-		abs, err := filepath.Abs(args[1])
+	switch {
+	case named != "":
+		abs, err := filepath.Abs(named)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "picoseal: "+err.Error())
 			os.Exit(1)
 		}
 		dir = abs
-		args = args[2:]
+	case !user:
+		dir = defaultDir
 	}
 	if len(args) == 0 {
 		usage()
@@ -92,7 +95,10 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
-	err := command(args[1:])
+	err := checkUser(os.Geteuid(), user, args[0])
+	if err == nil {
+		err = command(args[1:])
+	}
 	if errors.Is(err, errUsage) {
 		usage()
 		os.Exit(1)
@@ -128,12 +134,46 @@ also keeps them on disk and reloads them on unseal.
   import           Open the cryptobox on stdin, as export prints it, read the
                    same way, and print the secret
 
-  --dir <path>     Use the store at <path>; root uses %s by default,
-                   everyone else keeps secrets in memory only. Each store has
+  --user           Use the caller's own session instead of root's; secrets live
+                   in memory only unless --dir names a store
+  --dir <path>     Use the store at <path> instead of %s. Each store has
                    its own session key and secrets
 
-Only root reads root's secrets.
+Every command but export runs as root, or with --user as the caller. Only root
+reads root's secrets.
 `, binPath, maxTerminal, maxValue, defaultDir)
+}
+
+// parseFlags takes --user and --dir <path>, each at most once, before the
+// command.
+func parseFlags(args []string) (user bool, named string, rest []string, ok bool) {
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		switch {
+		case args[0] == "--user" && !user:
+			user = true
+			args = args[1:]
+		case args[0] == "--dir" && named == "" && len(args) >= 2 && args[1] != "" && !strings.HasPrefix(args[1], "--"):
+			named = args[1]
+			args = args[2:]
+		default:
+			return false, "", nil, false
+		}
+	}
+	return user, named, args, true
+}
+
+// checkUser makes whose session a command uses explicit: root's by default,
+// the caller's own only with --user. export uses no session.
+func checkUser(euid int, user bool, command string) error {
+	switch {
+	case command == "export":
+		return nil
+	case euid == 0 && user:
+		return errors.New("--user is for a user other than root")
+	case euid != 0 && !user:
+		return errors.New("this runs as root: use sudo")
+	}
+	return nil
 }
 
 func keyPath() string    { return filepath.Join(dir, "key") }

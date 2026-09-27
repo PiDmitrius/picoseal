@@ -352,3 +352,47 @@ func TestLargestSecretTravels(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionOwnerIsExplicit(t *testing.T) {
+	for _, c := range []struct {
+		euid    int
+		user    bool
+		command string
+		ok      bool
+	}{
+		{0, false, "pubkey", true},
+		{0, true, "pubkey", false},
+		{1000, false, "pubkey", false},
+		{1000, false, "import", false},
+		{1000, true, "import", true},
+		{1000, false, "export", true},
+		{0, true, "export", true},
+	} {
+		if err := checkUser(c.euid, c.user, c.command); (err == nil) != c.ok {
+			t.Errorf("euid %d, --user %v, %s: %v", c.euid, c.user, c.command, err)
+		}
+	}
+}
+
+func TestFlagsKeepANamedStoreInAnyOrder(t *testing.T) {
+	for _, args := range [][]string{
+		{"--dir", "/etc/picoseal", "--user", "list"},
+		{"--user", "--dir", "/etc/picoseal", "list"},
+	} {
+		user, named, rest, ok := parseFlags(args)
+		if !ok || !user || named != "/etc/picoseal" || !slices.Equal(rest, []string{"list"}) {
+			t.Errorf("%v: user %v, dir %q, rest %v, ok %v", args, user, named, rest, ok)
+		}
+	}
+	for _, args := range [][]string{
+		{"--user", "--user", "list"},
+		{"--dir", "a", "--dir", "b", "list"},
+		{"--dir", "--user", "list"},
+		{"--dir"},
+		{"--foo", "list"},
+	} {
+		if _, _, _, ok := parseFlags(args); ok {
+			t.Errorf("%v must be refused", args)
+		}
+	}
+}

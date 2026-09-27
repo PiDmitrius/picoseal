@@ -26,6 +26,7 @@ open.
     picoseal pubkey           Print the session public key
     picoseal export <pubkey>  Put stdin in a cryptobox for <pubkey> and print it
     picoseal import           Open the cryptobox on stdin and print the secret
+    picoseal --user ...       Use the caller's own session instead of root's
     picoseal --dir <path> ... Use the store at <path>
 
 `add`, `export`, `import` and `unseal` read one unechoed line from a terminal,
@@ -36,11 +37,14 @@ trailing newline they strip; a piped cryptobox may wrap or end in CRLF.
 `add` and `open` keep secrets; `export` and `import` make and open cryptoboxes
 without keeping anything.
 
-Root uses the store `/etc/picoseal`; everyone else keeps secrets in memory only
-unless they pass `--dir`. Each store has its own session key and secrets, so
-`pubkey`, `import` and `open` for one delivery take the same `--dir`. Only root
-reads root's secrets. systemd-logind drops the memory of a user other than root
-when their last session ends, unless `loginctl enable-linger` keeps it.
+Every command but `export` runs as root, with root's session and the store
+`/etc/picoseal`, and refuses any other user. `--user` makes it run as the
+calling user instead, with that user's own session and secrets in memory only
+unless `--dir` names a store; root refuses `--user`. `export` touches no session
+and runs as anyone. Each store has its own session key and secrets, so `pubkey`,
+`import` and `open` for one delivery take the same flags. Only root reads root's
+secrets. systemd-logind drops the memory of a user other than root when their
+last session ends, unless `loginctl enable-linger` keeps it.
 
 ## Memory only
 
@@ -125,9 +129,10 @@ Only cryptoboxes then reach the chat, the model and the tool output.
 That holds by setup, not by the agent's care, when the agent's user has no
 root, no `sudo` beyond the lines below and no `docker` group, and the owner
 reviews and installs every script that uses a secret.
-`sudo chmod 700 /usr/local/bin/picoseal` keeps the agent from running picoseal
-as itself, where a forgotten `sudo` would give it a session key of its own;
-`install` keeps that mode. The receiving script prints nothing:
+A forgotten `sudo` fails, since picoseal runs as another user only with
+`--user`; `sudo chmod 700 /usr/local/bin/picoseal` also keeps the agent from
+reaching for `--user`, and `install` keeps that mode. The receiving script
+prints nothing:
 
     #!/bin/sh
     # /etc/picoseal/scripts/receive <name>
