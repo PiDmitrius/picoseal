@@ -53,7 +53,8 @@ secret is piped to hold working copies in ordinary memory while they run.
     sudo picoseal import < gitlab.box | sudo picoseal add gitlab   # target
 
 `picoseal-export.html` does what `export` does in a browser, offline and
-self-contained: paste the public key and the secret, then copy the cryptobox.
+self-contained: paste the public key and the secret and press Export and copy,
+which puts the cryptobox in the clipboard in place of the secret.
 Open it as a local file or from a server you trust over https; a page served
 over plain http from elsewhere can be rewritten on the way.
 
