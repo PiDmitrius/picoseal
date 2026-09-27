@@ -525,7 +525,7 @@ func (sp *space) list(st store) ([]byte, error) {
 		return nil, err
 	}
 	for _, entry := range entries {
-		if _, ok := sp.secrets[entry.Name()]; !ok {
+		if _, ok := sp.secrets[entry.Name()]; !ok && checkName(entry.Name()) == nil {
 			lines = append(lines, entry.Name()+" sealed")
 		}
 	}
@@ -611,7 +611,7 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 	var failed []error
 	for _, entry := range entries {
 		name := entry.Name()
-		if _, ok := sp.secrets[name]; ok {
+		if _, ok := sp.secrets[name]; ok || checkName(name) != nil {
 			continue
 		}
 		data, err := readFile(st.secretPath(name))

@@ -272,12 +272,21 @@ func TestInitStoresMemoryAndSkipsBadCryptoboxes(t *testing.T) {
 		t.Fatalf("a bad cryptobox must be reported, got %v", err)
 	}
 	os.Remove(st.secretPath("junk"))
+	for _, leftover := range []string{"Tmp1", "Tmp2"} {
+		if err := os.WriteFile(st.secretPath(leftover), []byte(export(t, pubkey(t), "x")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.WriteFile(st.secretPath("Tmp2"), []byte("partial"), 0o600)
 	seal(t)
 	if err := unseal(t, "unseal", "pass"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := open(t, "early"); err != nil || got != "before" {
 		t.Fatalf("got %q, %v", got, err)
+	}
+	if got := list(t); got != "early\n" {
+		t.Fatalf("a leftover Tmp file must not count as a secret: %q", got)
 	}
 }
 
