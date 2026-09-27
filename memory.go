@@ -19,11 +19,11 @@ import (
 )
 
 // Segments: "PSE1" + scope + E's private key, and "PSS1" + scope + name
-// length + name + a sealed box for E, where scope names the euid and store
-// directory. The segment key is derived from the scope and the name, so a
-// segment is found without an index; that key is public and short, so a
-// segment counts only if its owner and creator are the caller, its mode is
-// 0600 and its scope and name match. A segment is visible before its creator
+// length + name + the raw bytes of a cryptobox for E, where scope names the
+// euid and store directory. The segment key is derived from the scope and the
+// name, so a segment is found without an index; that key is public and short,
+// so a segment counts only if its owner and creator are the caller, its mode
+// is 0600 and its scope and name match. A segment is visible before its creator
 // fills it, so the magic is written last and a reader waits briefly for it; a
 // segment that never gets one was left by a creator that died.
 const (
@@ -40,7 +40,9 @@ var (
 
 type foreignError struct{}
 
-func (foreignError) Error() string { return "a segment on this key is held by another user" }
+func (foreignError) Error() string {
+	return "a shared memory segment picoseal needs is held by another user"
+}
 
 func scope() []byte {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("picoseal\x00%d\x00%s", os.Geteuid(), dir)))
@@ -196,7 +198,7 @@ func publicKey(priv *[32]byte) *[32]byte {
 	return &pub
 }
 
-func parseSlot(data []byte) (name string, sealed []byte, ok bool) {
+func parseSlot(data []byte) (name string, raw []byte, ok bool) {
 	if len(data) < 13 || string(data[:4]) != magicSlot || !bytes.Equal(data[4:12], scope()) || len(data) < 13+int(data[12]) {
 		return "", nil, false
 	}
@@ -208,33 +210,33 @@ func storeSlot(name string, value []byte) error {
 	if err != nil {
 		return err
 	}
-	sealed, err := box.SealAnonymous(nil, value, pub, rand.Reader)
+	raw, err := box.SealAnonymous(nil, value, pub, rand.Reader)
 	if err != nil {
 		return err
 	}
 	data := append(append([]byte(magicSlot), scope()...), byte(len(name)))
-	err = createSegment(segmentKey('S', name), append(append(data, name...), sealed...))
+	err = createSegment(segmentKey('S', name), append(append(data, name...), raw...))
 	if errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("%s %w", name, errExists)
 	}
 	return err
 }
 
-// findSlot returns the id of the slot holding name and its sealed box; a
+// findSlot returns the id of the slot holding name and its cryptobox; a
 // damaged slot comes with its id, so it can be removed.
 func findSlot(name string) (int, []byte, error) {
 	id, data, err := settled(segmentKey('S', name))
 	if err != nil {
 		return id, nil, err
 	}
-	if stored, sealed, ok := parseSlot(data); ok && stored == name {
-		return id, sealed, nil
+	if stored, raw, ok := parseSlot(data); ok && stored == name {
+		return id, raw, nil
 	}
 	return -1, nil, os.ErrNotExist
 }
 
 func loadSlot(name string) ([]byte, error) {
-	_, sealed, err := findSlot(name)
+	_, raw, err := findSlot(name)
 	if err != nil {
 		return nil, err
 	}
@@ -242,9 +244,9 @@ func loadSlot(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	value, ok := box.OpenAnonymous(nil, sealed, pub, priv)
+	value, ok := box.OpenAnonymous(nil, raw, pub, priv)
 	if !ok {
-		return nil, fmt.Errorf("%s: slot is not sealed for the session key", name)
+		return nil, fmt.Errorf("%s: not a cryptobox for the session key", name)
 	}
 	return value, nil
 }

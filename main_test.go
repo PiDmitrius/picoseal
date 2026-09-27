@@ -101,10 +101,10 @@ func export(t *testing.T, key, value string) string {
 	return output(t, out)
 }
 
-func importRecord(t *testing.T, record string) (string, error) {
+func importBox(t *testing.T, cryptobox string) (string, error) {
 	t.Helper()
 	out := redirect(t, &os.Stdout, "")
-	redirect(t, &os.Stdin, record)
+	redirect(t, &os.Stdin, cryptobox)
 	err := cmdImport(nil)
 	return output(t, out), err
 }
@@ -220,22 +220,22 @@ func TestExportRefusesAMalformedPubkey(t *testing.T) {
 	}
 }
 
-func TestNestedRecordsTravelThroughTwoSessions(t *testing.T) {
+func TestNestedCryptoboxesTravelThroughTwoSessions(t *testing.T) {
 	outer := namespace(t, false)
 	outerKey := pubkey(t)
 	inner := namespace(t, false)
 	innerKey := pubkey(t)
 
 	const secret = "line1\nline2 $with `chars`"
-	record := export(t, outerKey, export(t, innerKey, secret))
+	cryptobox := export(t, outerKey, export(t, innerKey, secret))
 
 	dir = outer
-	record, err := importRecord(t, record)
+	cryptobox, err := importBox(t, cryptobox)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir = inner
-	got, err := importRecord(t, record)
+	got, err := importBox(t, cryptobox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,14 +249,14 @@ func TestNestedRecordsTravelThroughTwoSessions(t *testing.T) {
 
 func TestImportRefusesJunkAndOtherKeys(t *testing.T) {
 	namespace(t, false)
-	record := export(t, pubkey(t), "secret")
-	if _, err := importRecord(t, "not a record"); err == nil {
+	cryptobox := export(t, pubkey(t), "secret")
+	if _, err := importBox(t, "not a cryptobox"); err == nil {
 		t.Fatal("junk must be refused")
 	}
 	namespace(t, false)
 	pubkey(t)
-	if _, err := importRecord(t, record); err == nil {
-		t.Fatal("a record for another key must be refused")
+	if _, err := importBox(t, cryptobox); err == nil {
+		t.Fatal("a cryptobox for another key must be refused")
 	}
 }
 
@@ -293,9 +293,9 @@ func TestRemoveLeavesAnotherNameOnTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, _ := seal(pub, []byte("secret"))
+	raw, _ := makeBox(pub, []byte("secret"))
 	data := append(append(append([]byte(magicSlot), scope()...), 1), 'a')
-	if err := createSegment(segmentKey('S', "b"), append(data, sealed...)); err != nil {
+	if err := createSegment(segmentKey('S', "b"), append(data, raw...)); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmdRemove([]string{"b"}); err == nil {
@@ -308,7 +308,7 @@ func TestRemoveLeavesAnotherNameOnTheKey(t *testing.T) {
 	removeSegment(id)
 }
 
-func TestFirstUnsealStoresSlotsAndSkipsBadRecords(t *testing.T) {
+func TestFirstUnsealStoresSlotsAndSkipsBadCryptoboxes(t *testing.T) {
 	namespace(t, true)
 	if err := add(t, "early", "before"); err != nil {
 		t.Fatal(err)
@@ -317,7 +317,7 @@ func TestFirstUnsealStoresSlotsAndSkipsBadRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := unseal([]byte("pass"), nil); err == nil || !strings.Contains(err.Error(), "junk") {
-		t.Fatalf("a bad record must be reported, got %v", err)
+		t.Fatalf("a bad cryptobox must be reported, got %v", err)
 	}
 	if err := add(t, "late", "after"); err != nil {
 		t.Fatal(err)
@@ -340,14 +340,14 @@ func TestFirstUnsealStoresSlotsAndSkipsBadRecords(t *testing.T) {
 func TestLargestSecretTravels(t *testing.T) {
 	namespace(t, false)
 	secret := strings.Repeat("x", maxValue)
-	record := export(t, pubkey(t), secret)
+	cryptobox := export(t, pubkey(t), secret)
 	var wrapped strings.Builder
-	for line := range slices.Chunk([]byte(strings.TrimSpace(record)), 76) {
+	for line := range slices.Chunk([]byte(strings.TrimSpace(cryptobox)), 76) {
 		wrapped.Write(line)
 		wrapped.WriteString("\r\n")
 	}
-	for _, record := range []string{record, wrapped.String()} {
-		if got, err := importRecord(t, record); err != nil || got != secret {
+	for _, cryptobox := range []string{cryptobox, wrapped.String()} {
+		if got, err := importBox(t, cryptobox); err != nil || got != secret {
 			t.Fatalf("a %d-byte secret must travel: %v", maxValue, err)
 		}
 	}

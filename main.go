@@ -1,11 +1,12 @@
 // picoseal keeps secrets for root scripts in memory that never swaps: System V
 // segments locked with SHM_LOCK, one per secret plus one for the session key E,
 // owned by the caller with mode 0600 and scoped to its euid and store
-// directory. A slot is a sealed box (crypto_box_seal) for E, and E lives until
-// reboot. A store whose directory holds an unseal file also keeps every secret
-// on disk, sealed for U, which Argon2id derives from a password salted with the
-// store key; U exists only inside unseal, which loads those records into slots.
-// export and import carry a stream sealed for another E and touch no store.
+// directory. A slot holds the raw bytes of a cryptobox (crypto_box_seal) for E,
+// and E lives until reboot. A store whose directory holds an unseal file also
+// keeps every secret on disk as a cryptobox for U, which Argon2id derives from
+// a password salted with the store key; U exists only inside unseal, which
+// loads those cryptoboxes into slots. export makes a cryptobox for another E and import
+// opens one for this E; neither touches a store.
 // A running picoseal holds its working copies in ordinary process memory, not
 // dumpable, for as long as the command takes.
 // Permissions are the whole boundary: only root reads root's secrets, and
@@ -41,7 +42,7 @@ const (
 	// buffer of the tty driver, which discards the rest without telling anyone.
 	maxValue    = 64 << 10
 	maxTerminal = 4095
-	maxRecord   = (maxValue+box.AnonymousOverhead+2)/3*4 + 1
+	maxBox      = (maxValue+box.AnonymousOverhead+2)/3*4 + 1
 	binPath     = "/usr/local/bin/picoseal"
 	defaultDir  = "/etc/picoseal"
 )
@@ -103,10 +104,10 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `picoseal — sealed secrets for root scripts
+	fmt.Fprintf(os.Stderr, `picoseal — secrets in locked memory for root scripts
 
-Secrets live in locked memory until reboot or seal. A store with an unseal
-password also keeps them on disk and reloads them on unseal.
+Secrets live in locked memory until reboot or seal. A store with a password
+also keeps them on disk and reloads them on unseal.
 
   install          Create the store with secrets/, scripts/ and its key; as
                    root also copy the binary to %s
@@ -122,10 +123,10 @@ password also keeps them on disk and reloads them on unseal.
   list             List names; "sealed" marks those on disk only
   remove <name>    Delete a secret from memory and disk
   pubkey           Print the session public key
-  export <pubkey>  Seal stdin the same way for the session with <pubkey> and
-                   print the record
-  import           Print the stream in a record on stdin, as export prints it,
-                   read the same way
+  export <pubkey>  Put stdin, read the same way, in a cryptobox for the session
+                   with <pubkey> and print it
+  import           Open the cryptobox on stdin, as export prints it, read the
+                   same way, and print the secret
 
   --dir <path>     Use the store at <path>; root uses %s by default,
                    everyone else keeps secrets in memory only. Each store has
@@ -185,22 +186,22 @@ func unsealKey() (*[32]byte, error) {
 	return pub, err
 }
 
-func seal(pub *[32]byte, value []byte) (string, error) {
-	sealed, err := box.SealAnonymous(nil, value, pub, rand.Reader)
+func makeBox(pub *[32]byte, value []byte) (string, error) {
+	raw, err := box.SealAnonymous(nil, value, pub, rand.Reader)
 	if err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(sealed) + "\n", nil
+	return base64.RawURLEncoding.EncodeToString(raw) + "\n", nil
 }
 
-func openRecord(data []byte, source string, pub, priv *[32]byte) ([]byte, error) {
-	sealed, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
-	if err != nil || len(sealed) <= box.AnonymousOverhead {
-		return nil, fmt.Errorf("%s: not a picoseal record", source)
+func openBox(data []byte, source string, pub, priv *[32]byte) ([]byte, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil || len(raw) <= box.AnonymousOverhead {
+		return nil, fmt.Errorf("%s: not a picoseal cryptobox", source)
 	}
-	value, ok := box.OpenAnonymous(nil, sealed, pub, priv)
+	value, ok := box.OpenAnonymous(nil, raw, pub, priv)
 	if !ok {
-		return nil, fmt.Errorf("%s: not a record for this key", source)
+		return nil, fmt.Errorf("%s: not a cryptobox for this key", source)
 	}
 	return value, nil
 }
@@ -353,7 +354,7 @@ func cmdUnseal(args []string) error {
 }
 
 // unseal checks password against the store's public U, or sets it when unsealPub
-// is nil, loads every record on disk that is not in a slot yet and stores on
+// is nil, loads every cryptobox on disk that is not in a slot yet and stores on
 // disk every slot that is not there yet.
 func unseal(password []byte, unsealPub *[32]byte) error {
 	pub, priv, err := deriveU(password)
@@ -385,7 +386,7 @@ func unseal(password []byte, unsealPub *[32]byte) error {
 		data, err := os.ReadFile(secretPath(name))
 		if err == nil {
 			var value []byte
-			if value, err = openRecord(data, secretPath(name), pub, priv); err == nil {
+			if value, err = openBox(data, secretPath(name), pub, priv); err == nil {
 				err = storeSlot(name, value)
 			}
 		}
@@ -399,9 +400,9 @@ func unseal(password []byte, unsealPub *[32]byte) error {
 		}
 		value, err := loadSlot(name)
 		if err == nil {
-			var record string
-			if record, err = seal(pub, value); err == nil {
-				err = writeNew(secretPath(name), record)
+			var cryptobox string
+			if cryptobox, err = makeBox(pub, value); err == nil {
+				err = writeNew(secretPath(name), cryptobox)
 			}
 		}
 		if err != nil {
@@ -447,16 +448,16 @@ func cmdAdd(args []string) error {
 		return err
 	}
 	if unsealPub != nil {
-		record, err := seal(unsealPub, value)
+		cryptobox, err := makeBox(unsealPub, value)
 		if err != nil {
 			return err
 		}
-		if err := writeNew(secretPath(name), record); err != nil {
+		if err := writeNew(secretPath(name), cryptobox); err != nil {
 			return fmt.Errorf("%s not stored: %w", name, err)
 		}
 	}
 	if err := storeSlot(name, value); err != nil {
-		// A concurrent unseal may have loaded the record just written.
+		// A concurrent unseal may have loaded the cryptobox just written.
 		if loaded, loadErr := loadSlot(name); unsealPub != nil && errors.Is(err, errExists) && loadErr == nil && bytes.Equal(loaded, value) {
 			return nil
 		}
@@ -472,9 +473,9 @@ func cmdAdd(args []string) error {
 	if unsealPub, err = unsealKey(); unsealPub == nil || err != nil {
 		return err
 	}
-	record, err := seal(unsealPub, value)
+	cryptobox, err := makeBox(unsealPub, value)
 	if err == nil {
-		if err = writeNew(secretPath(name), record); errors.Is(err, os.ErrExist) {
+		if err = writeNew(secretPath(name), cryptobox); errors.Is(err, os.ErrExist) {
 			err = nil
 		}
 	}
@@ -593,11 +594,11 @@ func cmdExport(args []string) error {
 	if err != nil {
 		return err
 	}
-	record, err := seal(pub, value)
+	cryptobox, err := makeBox(pub, value)
 	if err != nil {
 		return err
 	}
-	_, err = io.WriteString(os.Stdout, record)
+	_, err = io.WriteString(os.Stdout, cryptobox)
 	return err
 }
 
@@ -605,7 +606,7 @@ func cmdImport(args []string) error {
 	if len(args) != 0 {
 		return errUsage
 	}
-	data, err := readSecret("Record", 2*maxRecord)
+	data, err := readSecret("Cryptobox", 2*maxBox)
 	if err != nil {
 		return err
 	}
@@ -613,7 +614,7 @@ func cmdImport(args []string) error {
 	if err != nil {
 		return err
 	}
-	value, err := openRecord(data, "stdin", pub, priv)
+	value, err := openBox(data, "stdin", pub, priv)
 	if err != nil {
 		return err
 	}

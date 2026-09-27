@@ -14,21 +14,22 @@ input, textarea { width: 100%; box-sizing: border-box; font: 14px ui-monospace, 
 textarea { height: 6rem; resize: vertical; }
 button { margin-top: .75rem; padding: .4rem 1rem; font: inherit; }
 #error { color: #a00; min-height: 1.5em; }
-#record { word-break: break-all; }
+#cryptobox { word-break: break-all; }
 </style>
 </head>
 <body>
 <h1>picoseal</h1>
-<p>Seals a secret for one picoseal session, as <code>picoseal export</code> does. Everything happens in this page;
-the host opens the record with <code>picoseal import</code>.</p>
+<p>Puts a secret in a cryptobox for one picoseal session, as <code>picoseal export</code>
+does. Everything happens in this page; the host opens the cryptobox with
+<code>picoseal import</code>.</p>
 <label for="pubkey">Public key</label>
 <input id="pubkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="output of picoseal pubkey">
 <label for="secret">Secret</label>
 <textarea id="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
 <button id="export">Export</button>
 <p id="error"></p>
-<label for="record">Record</label>
-<textarea id="record" readonly></textarea>
+<label for="cryptobox">Cryptobox</label>
+<textarea id="cryptobox" readonly></textarea>
 <button id="copy" disabled>Copy</button>
 <script>
 // tweetnacl-js 1.0.3 (nacl.min.js), public domain, https://github.com/dchest/tweetnacl-js
@@ -82,9 +83,9 @@ function blake2b(input, outlen) {
   return out;
 }
 
-// sealRecord matches picoseal export: crypto_box_seal of the text without one
-// trailing newline, as one line of unpadded base64url.
-function sealRecord(pubkey, text) {
+// makeCryptobox matches picoseal export: crypto_box_seal of the text without
+// one trailing newline, as one line of unpadded base64url.
+function makeCryptobox(pubkey, text) {
   pubkey = pubkey.trim();
   if (!/^[A-Za-z0-9_-]{43}$/.test(pubkey)) throw new Error("not a picoseal public key");
   const pk = Uint8Array.from(atob(pubkey.replace(/-/g, "+").replace(/_/g, "/") + "="), c => c.charCodeAt(0));
@@ -98,11 +99,11 @@ function sealRecord(pubkey, text) {
   const box = nacl.box(message, blake2b(nonce, 24), pk, ephemeral.secretKey);
   ephemeral.secretKey.fill(0);
   message.fill(0);
-  const sealed = new Uint8Array(32 + box.length);
-  sealed.set(ephemeral.publicKey);
-  sealed.set(box, 32);
+  const raw = new Uint8Array(32 + box.length);
+  raw.set(ephemeral.publicKey);
+  raw.set(box, 32);
   let binary = "";
-  for (const byte of sealed) binary += String.fromCharCode(byte);
+  for (const byte of raw) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
@@ -110,11 +111,11 @@ if (typeof document !== "undefined") {
   const $ = id => document.getElementById(id);
   $("export").onclick = () => {
     $("error").textContent = "";
-    $("record").value = "";
+    $("cryptobox").value = "";
     $("copy").disabled = true;
     $("copy").textContent = "Copy";
     try {
-      $("record").value = sealRecord($("pubkey").value, $("secret").value);
+      $("cryptobox").value = makeCryptobox($("pubkey").value, $("secret").value);
       $("secret").value = "";
       $("copy").disabled = false;
     } catch (e) {
@@ -122,11 +123,11 @@ if (typeof document !== "undefined") {
     }
   };
   $("copy").onclick = async () => {
-    const record = $("record");
-    record.select();
+    const cryptobox = $("cryptobox");
+    cryptobox.select();
     if (!document.execCommand("copy")) {
       try {
-        await navigator.clipboard.writeText(record.value);
+        await navigator.clipboard.writeText(cryptobox.value);
       } catch (e) {
         $("error").textContent = "copy failed: " + e.message;
         return;

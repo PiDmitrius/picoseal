@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-// TestExportPageRecordsOpen runs the scripts of export.html under node and opens
-// what they seal with import.
-func TestExportPageRecordsOpen(t *testing.T) {
+// TestExportPageCryptoboxesOpen runs the scripts of picoseal-export.html under
+// node and opens the cryptoboxes they make with import.
+func TestExportPageCryptoboxesOpen(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node is not installed")
 	}
-	page, err := os.ReadFile("export.html")
+	page, err := os.ReadFile("picoseal-export.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestExportPageRecordsOpen(t *testing.T) {
 	for _, m := range regexp.MustCompile(`(?s)<script>(.*?)</script>`).FindAllStringSubmatch(string(page), -1) {
 		script.WriteString(m[1])
 	}
-	script.WriteString("\nprocess.stdout.write(sealRecord(process.argv[1], process.argv[2]));\n})();\n")
+	script.WriteString("\nprocess.stdout.write(makeCryptobox(process.argv[1], process.argv[2]));\n})();\n")
 
 	namespace(t, false)
 	key := pubkey(t)
@@ -34,11 +34,11 @@ func TestExportPageRecordsOpen(t *testing.T) {
 		"двe\nстроки $with `chars` ✓": "двe\nстроки $with `chars` ✓",
 		strings.Repeat("x", 300):      strings.Repeat("x", 300),
 	} {
-		record, err := exec.Command(node, "-e", script.String(), key, text).Output()
+		cryptobox, err := exec.Command(node, "-e", script.String(), key, text).Output()
 		if err != nil {
 			t.Fatalf("%q: %v", text, err)
 		}
-		got, err := importRecord(t, string(record))
+		got, err := importBox(t, string(cryptobox))
 		if err != nil || got != want {
 			t.Fatalf("%q: got %q, %v", text, got, err)
 		}
@@ -49,7 +49,7 @@ func TestExportPageRecordsOpen(t *testing.T) {
 		}
 	}
 	if err := exec.Command(node, "-e", script.String(), key, strings.Repeat("x", maxValue)).Run(); err != nil {
-		t.Fatalf("%d bytes must be sealed: %v", maxValue, err)
+		t.Fatalf("%d bytes must go in a cryptobox: %v", maxValue, err)
 	}
 	if err := exec.Command(node, "-e", script.String(), key, strings.Repeat("x", maxValue)+"\n").Run(); err == nil {
 		t.Fatalf("%d bytes and a newline must be refused, as export does", maxValue)

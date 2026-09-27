@@ -1,34 +1,40 @@
 # picoseal
 
-Secrets kept in locked memory for scripts you pin in sudoers, delivered sealed
-for the host that uses them.
+Secrets kept in locked memory for scripts you pin in sudoers, delivered in
+cryptoboxes that only the host using them can open.
 
-Every user has a session key that lives in memory until reboot. Secrets added
-or delivered stay in memory, never swapped, until reboot or `seal`. A store
-with an unseal password also keeps them on disk, sealed for a key derived from
-that password, and loads them back on `unseal`.
+A secret is a value under a name. A cryptobox is a secret locked for one key,
+as one line of base64url. Every user has a session key that lives in memory
+until reboot; `pubkey` prints its public half, `export` puts a secret in a
+cryptobox for it and `import` opens that cryptobox.
+
+Secrets stay in memory, never swapped, until reboot or `seal`. A store with a
+password also keeps them on disk, as cryptoboxes for a key derived from
+that password. `unseal` takes out those cryptoboxes and learns to open them;
+`seal` puts them away and forgets how, while cryptoboxes sent to `pubkey` still
+open.
 
 ## Commands
 
     picoseal install          Create the store and its key; as root also /usr/local/bin/picoseal
-    picoseal unseal           Ask the store password and load the store into memory
+    picoseal unseal           Ask the store password and load the secrets on disk into memory
     picoseal seal             Drop every secret from memory
     picoseal add <name>       Keep stdin as <name>
     picoseal open <name>      Print the secret
     picoseal list             List names; "sealed" marks those on disk only
     picoseal remove <name>    Delete a secret from memory and disk
     picoseal pubkey           Print the session public key
-    picoseal export <pubkey>  Seal stdin for the session with <pubkey> and print the record
-    picoseal import           Print the stream in a record on stdin
+    picoseal export <pubkey>  Put stdin in a cryptobox for <pubkey> and print it
+    picoseal import           Open the cryptobox on stdin and print the secret
     picoseal --dir <path> ... Use the store at <path>
 
 `add`, `export`, `import` and `unseal` read one unechoed line from a terminal,
 under 4095 bytes, or a whole pipe, up to 65536 bytes of secret counting the one
-trailing newline they strip; a piped record may wrap or end in CRLF.
+trailing newline they strip; a piped cryptobox may wrap or end in CRLF.
 `add` refuses to replace an existing name: rotate with `remove` then `add`.
 
-`add` and `open` keep secrets; `export` and `import` seal and open a stream for
-one session without keeping anything.
+`add` and `open` keep secrets; `export` and `import` make and open cryptoboxes
+without keeping anything.
 
 Root uses the store `/etc/picoseal`; everyone else keeps secrets in memory only
 unless they pass `--dir`. Each store has its own session key and secrets, so
@@ -42,18 +48,18 @@ Without a store password, nothing reaches the disk: secrets live until reboot
 and are delivered again after it.
 
     sudo picoseal pubkey                                  # target
-    picoseal export <pubkey> < token > gitlab.rec         # anywhere, no root
-    sudo picoseal import < gitlab.rec | sudo picoseal add gitlab   # target
+    picoseal export <pubkey> < token > gitlab.box         # anywhere, no root
+    sudo picoseal import < gitlab.box | sudo picoseal add gitlab   # target
 
-`export.html` does what `export` does in a browser, offline and self-contained:
-paste the public key and the secret, then copy the record. Open it as a local
-file or from a server you trust over https; a page served over plain http from
-elsewhere can be rewritten on the way.
+`picoseal-export.html` does what `export` does in a browser, offline and
+self-contained: paste the public key and the secret, then copy the cryptobox.
+Open it as a local file or from a server you trust over https; a page served
+over plain http from elsewhere can be rewritten on the way.
 
 The session key changes on every reboot, so take a fresh `pubkey` over a channel
 that authenticates the host, such as ssh; a key swapped on the way hands the
-secret to whoever swapped it. A record opens only in the session it was sealed
-for.
+secret to whoever swapped it. A cryptobox opens only in the session it was
+made for.
 
 ## A store on disk
 
@@ -72,18 +78,18 @@ memory.
 
 ## Nesting
 
-A record is itself a stream, so records nest: seal for the inner session first,
+A cryptobox can go in another cryptobox: make it for the inner session first,
 then for the outer one, and each host opens its own layer:
 
-    picoseal export <inner-pubkey> < token | picoseal export <outer-pubkey> > outer.rec
-    sudo picoseal import < outer.rec > inner.rec                   # outer host
-    sudo picoseal import < inner.rec | sudo picoseal add gitlab    # inner host
+    picoseal export <inner-pubkey> < token | picoseal export <outer-pubkey> > outer.box
+    sudo picoseal import < outer.box > inner.box                   # outer host
+    sudo picoseal import < inner.box | sudo picoseal add gitlab    # inner host
 
-Each layer grows the record by about a third, and `export` takes at most
+Each layer grows the cryptobox by about a third, and `export` takes at most
 65536 bytes.
 
-A record carries no sender identity: anyone with the public key can make one,
-so accept records only over a channel you trust.
+A cryptobox carries no sender identity: anyone with the public key can make
+one, so accept cryptoboxes only over a channel you trust.
 
 ## Letting other users use a secret
 
