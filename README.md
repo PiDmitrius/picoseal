@@ -3,13 +3,13 @@
 Secrets kept in locked memory for scripts you pin in sudoers, delivered in
 cryptoboxes that only the host using them can open.
 
-A secret is a value under a name. A cryptobox is a secret locked for one key,
-as one line of base64url. Every user has a session key that lives in memory
-until reboot; `pubkey` prints its public half, `export` puts a secret in a
-cryptobox for it and `import` opens that cryptobox.
+A secret is a value under a name. A cryptobox is a secret locked for one key, as
+one line of base64url. Every user and store has a session key that lives in
+memory until reboot; `pubkey` prints its public half, `export` puts a secret in
+a cryptobox for it and `import` opens that cryptobox.
 
-Secrets stay in memory, never swapped, until reboot or `seal`. A store with a
-password also keeps them on disk, as cryptoboxes for a key derived from
+Secrets stay in locked memory, never swapped, until reboot or `seal`. A store
+with a password also keeps them on disk, as cryptoboxes for a key derived from
 that password. `unseal` takes out those cryptoboxes and learns to open them;
 `seal` puts them away and forgets how, while cryptoboxes sent to `pubkey` still
 open.
@@ -44,8 +44,9 @@ when their last session ends, unless `loginctl enable-linger` keeps it.
 
 ## Memory only
 
-Without a store password, nothing reaches the disk: secrets live until reboot
-and are delivered again after it.
+Without a store password, picoseal writes nothing to disk: secrets live until
+reboot and are delivered again after it. A running picoseal and the program a
+secret is piped to hold working copies in ordinary memory while they run.
 
     sudo picoseal pubkey                                  # target
     picoseal export <pubkey> < token > gitlab.box         # anywhere, no root
@@ -105,10 +106,39 @@ it, and read the secret into its own variable so `set -e` catches a failure:
 Not `-H`: that would put the token in the process arguments, which every user
 on the machine can read.
 
-Pin that script in sudoers, never `picoseal` itself — a caller who picks the
-name can open every secret:
+Pin that script in sudoers, never `picoseal` with free arguments — a caller who
+picks the name can open every secret:
 
     <user> ALL=(root) NOPASSWD: /etc/picoseal/scripts/projects ""
 
 The `""` forbids arguments, so the caller cannot steer the script. Keep the
 script and every directory above it root-owned and not writable by the caller.
+
+## Agents
+
+An agent that operates a host gets a secret the same way and never needs to
+see it: the owner turns the secret into a cryptobox in `picoseal-export.html`
+and posts it in the chat, and the agent hands it to a script that keeps it.
+Only cryptoboxes then reach the chat, the model and the tool output.
+
+That holds by setup, not by the agent's care, when the agent's user has no
+root, no `sudo` beyond the lines below and no `docker` group, and the owner
+reviews and installs every script that uses a secret. The receiving script
+prints nothing:
+
+    #!/bin/sh
+    # /etc/picoseal/scripts/receive <name>
+    set -eu
+    picoseal import | picoseal add "$1"
+
+    <agent> ALL=(root) NOPASSWD: /usr/local/bin/picoseal pubkey, /usr/local/bin/picoseal list, /etc/picoseal/scripts/receive *
+
+The agent posts `sudo picoseal pubkey`, then delivers with
+`printf '%s\n' '<cryptobox>' | sudo /etc/picoseal/scripts/receive gitlab` and
+checks with `sudo picoseal list`. `open` and a bare `import` print the secret:
+an agent that can run them sends it into its own output, so they go only into
+a pipe to the program that uses the secret. Scripts do not trace (`set -x`),
+run clients verbosely or put a secret in arguments.
+
+The public key reaches the owner through the agent, which is trusted not to
+swap it; a key from anywhere else is taken over ssh.
