@@ -10,11 +10,11 @@
 <style>
 body { font: 15px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
 label { display: block; margin-top: 1rem; font-weight: 600; }
-input, textarea { width: 100%; box-sizing: border-box; font: 14px ui-monospace, monospace; padding: .5rem; }
+input, textarea { width: 100%; box-sizing: border-box; font: 14px ui-monospace, monospace; padding: .5rem; outline: 0; }
 textarea { height: 6rem; resize: vertical; }
 #copy { margin-top: .75rem; width: 140px; padding: 12px 0; font-family: inherit; font-size: 18px; line-height: 1.2; color: #fff; background: #222; border: 0; outline: 0; cursor: pointer; }
 #copy:disabled { background: #bbb; cursor: default; }
-#copy.done { background: #003366; }
+#copy.done { background: #555; }
 #copy.failed { background: #a00; }
 #status { min-height: 1.5em; font-weight: 600; color: #a00; }
 #cryptobox { word-break: break-all; }
@@ -22,7 +22,7 @@ textarea { height: 6rem; resize: vertical; }
 </head>
 <body>
 <h1>picoseal</h1>
-<label for="pubkey">Public key</label>
+<label for="pubkey">PubKey</label>
 <input id="pubkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="output of picoseal pubkey">
 <label for="secret">Secret</label>
 <textarea id="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
@@ -145,7 +145,7 @@ if (typeof document !== "undefined") {
         return;
       }
     }
-    flash("done", "Copy", 300);
+    flash("done", "Copied!", 1000);
   };
   const update = () => {
     fail("");
