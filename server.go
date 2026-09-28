@@ -33,8 +33,7 @@ import (
 // connections, and the rest are turned away at once; root is never turned
 // away. Requests are read side by side but run one at a time under the
 // server's one lock, Argon2 included: everything a request does runs as in a
-// single thread, and nothing else in the service locks. A user's space holds
-// only so many names, in memory and on disk together. Stored values rest in
+// single thread, and nothing else in the service locks. Stored values rest in
 // locked pages; a request, its answer and Argon2 hold working copies in
 // ordinary memory, cleared or given back to the system once they are done.
 
@@ -43,9 +42,9 @@ const (
 	argonMemory   = 1 << 20 // KiB
 	maxUIDClients = 8
 	timeout       = 10 * time.Second
-	// userPages caps the locked pages and the names of one user's space, and
-	// when the service's memlock limit binds, all users together get at most
-	// half of it, so root always has room.
+	// userPages caps the locked pages of one user's space, and when the service's
+	// memlock limit binds, all users together get at most half of it, so root
+	// always has room.
 	userPages = 256
 )
 
@@ -465,7 +464,11 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 		if sp.priv == nil {
 			return nil, errNoSession
 		}
-		return openBox(payload, "stdin", sp.pub, (*[32]byte)(sp.priv.value()))
+		value, err := openBox(payload, "stdin", sp.pub, (*[32]byte)(sp.priv.value()))
+		if errors.Is(err, errOther) {
+			err = fmt.Errorf("%w: it was made for another pubkey, one from before the service restarted or from another space", err)
+		}
+		return value, err
 	case "add", "adde":
 		return nil, sp.add(st, name, payload, command == "adde")
 	case "open":

@@ -389,8 +389,8 @@ func TestImportRefusesJunkAndOtherKeys(t *testing.T) {
 	}
 	service(t)
 	pubkey(t)
-	if _, err := importBox(t, cryptobox); err == nil {
-		t.Fatal("a cryptobox for another key must be refused")
+	if _, err := importBox(t, cryptobox); err == nil || !strings.Contains(err.Error(), "before the service restarted") {
+		t.Fatalf("a cryptobox for another key must be refused with the likely reason, got %v", err)
 	}
 }
 

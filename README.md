@@ -14,9 +14,9 @@ and `import` opens that cryptobox.
 Secrets stay in the service's memory, in pages locked against swap and left out
 of core dumps, until the service stops or `seal`. `adde` keeps a secret there
 only; `add` also keeps it on disk, in root's store with a password, as a
-cryptobox for a key derived from that password. `unseal` takes out those cryptoboxes and
-learns to open them; `seal` puts them away and forgets how, while cryptoboxes
-sent to `pubkey` still open.
+cryptobox for a key derived from that password. `unseal` takes out those
+cryptoboxes and learns to open them; `seal` puts them away and forgets how,
+while cryptoboxes sent to `pubkey` still open.
 
 ## Commands
 
@@ -73,12 +73,11 @@ keeps the binary's mode. Run the service under systemd:
 
     sudo systemctl enable --now picoseal
 
-In a container, start the service and wait for its socket before anything that
-needs a secret:
+In a container, start the service and wait until it answers before anything
+that needs a secret:
 
-    rm -f /run/picoseal.sock
     picoseal serve &
-    until [ -S /run/picoseal.sock ]; do sleep 0.1; done
+    until picoseal list >/dev/null 2>&1; do sleep 0.1; done
 
 Every other command says so plainly when the service is not running. Stopping
 or restarting it drops every secret in memory and every session key: after an
