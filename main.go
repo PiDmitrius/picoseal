@@ -109,8 +109,9 @@ memory, and unseal reloads them.
   save <name>      Keep stdin, read the same way, as <name> in memory and in
                    the store init set up
   open <name>      Print the secret
-  list             List names; "sealed" marks those on disk only, "memory"
-                   those in memory only
+  list             List names, + for those open and - for those waiting for
+                   unseal, with their state: unsealed, sealed, or memory for
+                   those add keeps
   remove <name>    Delete a secret from memory and disk
   pubkey           Print the session public key
   export <pubkey>  Put stdin, read the same way, in a cryptobox for the session

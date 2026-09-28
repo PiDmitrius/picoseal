@@ -177,7 +177,7 @@ func TestMemoryRoundTrip(t *testing.T) {
 	if got, err := open(t, "brave"); err != nil || got != secret {
 		t.Fatalf("got %q, %v", got, err)
 	}
-	if got := list(t); got != "brave memory\n" {
+	if got := list(t); got != "+ brave  (memory)\n" {
 		t.Fatalf("list: %q", got)
 	}
 	if err := add(t, "brave", "second"); err == nil {
@@ -264,7 +264,7 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if _, err := open(t, "brave"); err == nil || !strings.Contains(err.Error(), "unseal") {
 		t.Fatalf("a sealed secret must ask for unseal, got %v", err)
 	}
-	if got := list(t); got != "brave sealed\n" {
+	if got := list(t); got != "- brave  (sealed)\n" {
 		t.Fatalf("list: %q", got)
 	}
 	if err := save(t, "gitlab", "token"); err != nil {
@@ -284,7 +284,7 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if err := remove(t, "brave"); err != nil {
 		t.Fatal(err)
 	}
-	if got := list(t); got != "gitlab\n" {
+	if got := list(t); got != "+ gitlab  (unsealed)\n" {
 		t.Fatalf("list: %q", got)
 	}
 }
@@ -322,7 +322,7 @@ func TestUnsealSkipsBadCryptoboxes(t *testing.T) {
 	if got, err := open(t, "early"); err != nil || got != "before" {
 		t.Fatalf("got %q, %v", got, err)
 	}
-	if got := list(t); got != "early\n" {
+	if got := list(t); got != "+ early  (unsealed)\n" {
 		t.Fatalf("a leftover Tmp file must not count as a secret: %q", got)
 	}
 }
@@ -636,7 +636,7 @@ func TestAddStaysInMemory(t *testing.T) {
 	if _, err := run(t, "other", "add", "kept"); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("add must refuse an existing name, got %v", err)
 	}
-	if got := list(t); got != "early memory\nkept\nlate memory\n" {
+	if got := list(t); got != "+ early  (memory)\n+ kept   (unsealed)\n+ late   (memory)\n" {
 		t.Fatalf("list: %q", got)
 	}
 	if got, err := open(t, "late"); err != nil || got != "late" {
@@ -649,7 +649,7 @@ func TestAddStaysInMemory(t *testing.T) {
 		t.Fatalf("only save may write to disk, got %v", entries)
 	}
 	seal(t)
-	if got := list(t); got != "early memory\nkept sealed\nlate memory\n" {
+	if got := list(t); got != "+ early  (memory)\n- kept   (sealed)\n+ late   (memory)\n" {
 		t.Fatalf("list: %q", got)
 	}
 }
@@ -702,7 +702,7 @@ func TestStoreNeedsNoDirectoryUntilInit(t *testing.T) {
 	if err := unseal(t, "unseal", "pass"); err != nil {
 		t.Fatal(err)
 	}
-	if got := list(t); got != "kept\ntemp memory\n" {
+	if got := list(t); got != "+ kept  (unsealed)\n+ temp  (memory)\n" {
 		t.Fatalf("list: %q", got)
 	}
 }
@@ -761,7 +761,7 @@ func TestUserSpaceStaysInMemory(t *testing.T) {
 	if _, err := request([]string{"--user", "add", "x"}, []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := request([]string{"--user", "list"}, nil); err != nil || string(got) != "x memory\n" {
+	if got, err := request([]string{"--user", "list"}, nil); err != nil || string(got) != "+ x  (memory)\n" {
 		t.Fatalf("got %q, %v", got, err)
 	}
 	if entries, _ := os.ReadDir(base); len(entries) != 1 {

@@ -529,30 +529,36 @@ func (sp *space) add(st *store, name string, value []byte, memoryOnly bool) erro
 	return nil
 }
 
+// list prints each name with + when it opens and - when it waits for unseal,
+// and its state: unsealed, sealed, or memory for one never stored.
 func (sp *space) list(st *store) ([]byte, error) {
-	lines := []string{}
+	status := map[string]string{}
 	for name := range sp.secrets {
+		status[name] = "+ unsealed"
 		if !st.holds(name) {
-			name += " memory"
+			status[name] = "+ memory"
 		}
-		lines = append(lines, name)
 	}
-	var entries []os.DirEntry
 	if st != nil {
-		var err error
-		if entries, err = os.ReadDir(st.secretsDir()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		entries, err := os.ReadDir(st.secretsDir())
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-	}
-	for _, entry := range entries {
-		if _, ok := sp.secrets[entry.Name()]; !ok && checkName(entry.Name()) == nil {
-			lines = append(lines, entry.Name()+" sealed")
+		for _, entry := range entries {
+			if _, ok := status[entry.Name()]; !ok && checkName(entry.Name()) == nil {
+				status[entry.Name()] = "- sealed"
+			}
 		}
 	}
-	sort.Strings(lines)
+	names, width := make([]string, 0, len(status)), 0
+	for name := range status {
+		names, width = append(names, name), max(width, len(name))
+	}
+	sort.Strings(names)
 	var out bytes.Buffer
-	for _, line := range lines {
-		out.WriteString(line + "\n")
+	for _, name := range names {
+		mark, state, _ := strings.Cut(status[name], " ")
+		fmt.Fprintf(&out, "%s %-*s  (%s)\n", mark, width, name, state)
 	}
 	return out.Bytes(), nil
 }

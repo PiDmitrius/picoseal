@@ -28,7 +28,7 @@ forgets how to open them, and `unseal` brings them back; cryptoboxes sent to
     picoseal add <name>       Keep stdin as <name> in memory only
     picoseal save <name>      Keep stdin as <name> in memory and in the store
     picoseal open <name>      Print the secret
-    picoseal list             List names; "sealed" marks those on disk only, "memory" those in memory only
+    picoseal list             List names and their state
     picoseal remove <name>    Delete a secret from memory and disk
     picoseal pubkey           Print the session public key
     picoseal export <pubkey>  Put stdin in a cryptobox for <pubkey> and print it
@@ -40,7 +40,12 @@ from a terminal, under 4095 bytes, or a whole pipe, up to 65536 bytes of secret
 counting the one trailing newline they strip; a piped cryptobox may wrap or end
 in CRLF.
 `add` and `save` refuse to replace an existing name: rotate with `remove` then
-the same command again.
+the same command again. `list` marks with `+` what opens now and with `-` what
+waits for `unseal`:
+
+    - db      (sealed)
+    + gitlab  (unsealed)
+    + temp    (memory)
 
 `add`, `save` and `open` keep secrets; `export` and `import` make and open
 cryptoboxes without keeping anything.
