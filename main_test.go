@@ -90,6 +90,12 @@ func add(t *testing.T, name, value string) error {
 	return err
 }
 
+func adde(t *testing.T, name, value string) error {
+	t.Helper()
+	_, err := run(t, value, "adde", name)
+	return err
+}
+
 func open(t *testing.T, name string) (string, error) {
 	t.Helper()
 	return run(t, "", "open", name)
@@ -151,16 +157,19 @@ func unseal(t *testing.T, command, password string) error {
 func TestMemoryRoundTrip(t *testing.T) {
 	service(t)
 	const secret = "line1\nline2 $with `chars`"
-	if err := add(t, "brave", secret+"\n"); err != nil {
+	if err := add(t, "brave", secret); err == nil || !strings.Contains(err.Error(), "adde") {
+		t.Fatalf("add without a store must point to init and adde, got %v", err)
+	}
+	if err := adde(t, "brave", secret+"\n"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := open(t, "brave"); err != nil || got != secret {
 		t.Fatalf("got %q, %v", got, err)
 	}
-	if got := list(t); got != "brave\n" {
+	if got := list(t); got != "brave memory\n" {
 		t.Fatalf("list: %q", got)
 	}
-	if err := add(t, "brave", "second"); err == nil {
+	if err := adde(t, "brave", "second"); err == nil {
 		t.Fatal("add must refuse to replace a secret")
 	}
 	if err := remove(t, "brave"); err != nil {
@@ -188,7 +197,7 @@ func TestSpacesFollowTheKernelUID(t *testing.T) {
 	if err := os.Chmod(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.do(1000, true, "add", "brave", []byte("secret")); err != nil {
+	if _, err := s.do(1000, true, "adde", "brave", []byte("secret")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.do(1001, true, "open", "brave", nil); err == nil {
@@ -202,7 +211,7 @@ func TestSpacesFollowTheKernelUID(t *testing.T) {
 func TestSealKeepsTheSessionKey(t *testing.T) {
 	service(t)
 	key := pubkey(t)
-	if err := add(t, "brave", "secret"); err != nil {
+	if err := adde(t, "brave", "secret"); err != nil {
 		t.Fatal(err)
 	}
 	seal(t)
@@ -260,20 +269,24 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	}
 }
 
-func TestInitStoresMemoryAndSkipsBadCryptoboxes(t *testing.T) {
+func TestUnsealSkipsBadCryptoboxes(t *testing.T) {
 	service(t)
+	if err := unseal(t, "init", "pass"); err != nil {
+		t.Fatal(err)
+	}
 	if err := add(t, "early", "before"); err != nil {
 		t.Fatal(err)
 	}
 	st := userStore()
-	if err := st.makeDirs(); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(st.secretPath("junk"), []byte("junk\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := unseal(t, "init", "pass"); err == nil || !strings.Contains(err.Error(), "junk") {
+	seal(t)
+	if err := unseal(t, "unseal", "pass"); err == nil || !strings.Contains(err.Error(), "junk") {
 		t.Fatalf("a bad cryptobox must be reported, got %v", err)
+	}
+	if got, err := open(t, "early"); err != nil || got != "before" {
+		t.Fatalf("a good cryptobox must load past a bad one, got %q, %v", got, err)
 	}
 	os.Remove(st.secretPath("junk"))
 	for _, leftover := range []string{"Tmp1", "Tmp2"} {
@@ -319,7 +332,7 @@ func TestNamesStayInsideTheStore(t *testing.T) {
 func TestOversizedSecretIsRefused(t *testing.T) {
 	service(t)
 	oversized := strings.Repeat("A", maxValue) + "\n" + "lost tail"
-	if err := add(t, "big", oversized); err == nil {
+	if err := adde(t, "big", oversized); err == nil {
 		t.Fatal("an oversized secret must be refused, not truncated")
 	}
 }
@@ -510,7 +523,7 @@ func TestLinkAboveTheStoreIsRefused(t *testing.T) {
 
 func TestNamesAreCheckedBeforeTheyReachTheService(t *testing.T) {
 	service(t)
-	if err := add(t, "-", "dash"); err != nil {
+	if err := adde(t, "-", "dash"); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"", "a\nb", "a b"} {
@@ -640,16 +653,19 @@ func TestMemoryLimitTakesTheTightestCgroup(t *testing.T) {
 func TestStoreNeedsNoDirectoryUntilInit(t *testing.T) {
 	service(t)
 	base = filepath.Join(base, "etc")
-	if _, err := run(t, "temp", "adde", "temp"); err != nil {
+	if err := adde(t, "temp", "temp"); err != nil {
 		t.Fatal(err)
 	}
-	if err := add(t, "kept", "value"); err != nil {
-		t.Fatal(err)
+	if err := add(t, "kept", "value"); err == nil {
+		t.Fatal("add without a store must fail")
 	}
 	if _, err := os.Stat(base); !os.IsNotExist(err) {
 		t.Fatal("memory only must create nothing")
 	}
 	if err := unseal(t, "init", "pass"); err != nil {
+		t.Fatal(err)
+	}
+	if err := add(t, "kept", "value"); err != nil {
 		t.Fatal(err)
 	}
 	seal(t)

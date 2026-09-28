@@ -94,24 +94,23 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `picoseal — secrets in locked memory for root scripts
 
 One service, picoseal serve, keeps every secret in its locked memory until it
-stops or seal. A store with a password also keeps them on disk and reloads
-them on unseal.
+stops or seal. add also keeps them in a store with a password, and unseal
+reloads them from it.
 
   install          Copy the binary to %s
   serve            Run the service that holds the secrets
-  init             Set the store password, asked twice on a terminal, and store
-                   on disk the secrets add kept
-  unseal           Ask the store password, load the secrets on disk into memory
-                   and store on disk those add kept only in memory
+  init             Set the store password, asked twice on a terminal
+  unseal           Ask the store password and load the secrets on disk into
+                   memory
   seal             Drop every secret from memory
-  add <name>       Keep stdin as <name>, on disk too if the store is set up:
+  add <name>       Keep stdin as <name> in memory and in the store init set up:
                    one unechoed line from a terminal, under %d bytes, or
                    a whole pipe, up to %d bytes counting the one trailing
                    newline it strips
-  adde <name>      Keep stdin as <name> in memory only, never on disk
+  adde <name>      Keep stdin, read the same way, as <name> in memory only
   open <name>      Print the secret
   list             List names; "sealed" marks those on disk only, "memory"
-                   those adde keeps
+                   those in memory only
   remove <name>    Delete a secret from memory and disk
   pubkey           Print the session public key
   export <pubkey>  Put stdin, read the same way, in a cryptobox for the session

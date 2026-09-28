@@ -93,9 +93,8 @@ func usersBudget() *budget {
 // locked holds a value in its own anonymous pages, locked against swap and
 // left out of core dumps.
 type locked struct {
-	pages      []byte
-	n          int
-	memoryOnly bool
+	pages []byte
+	n     int
 }
 
 func (sp *space) lock(value []byte) (*locked, error) {
@@ -496,12 +495,14 @@ func (sp *space) add(st store, name string, value []byte, memoryOnly bool) error
 	if err != nil {
 		return err
 	}
+	if unsealPub == nil && !memoryOnly {
+		return errors.New("no store: run picoseal init, or adde for memory only")
+	}
 	held, err := sp.lock(value)
 	if err != nil {
 		return err
 	}
-	held.memoryOnly = memoryOnly
-	if unsealPub != nil && !memoryOnly {
+	if !memoryOnly {
 		cryptobox, err := makeBox(unsealPub, value)
 		if err == nil {
 			err = writeNew(st.secretPath(name), cryptobox)
@@ -517,8 +518,8 @@ func (sp *space) add(st store, name string, value []byte, memoryOnly bool) error
 
 func (sp *space) list(st store) ([]byte, error) {
 	lines := []string{}
-	for name, value := range sp.secrets {
-		if value.memoryOnly {
+	for name := range sp.secrets {
+		if _, err := os.Lstat(st.secretPath(name)); errors.Is(err, os.ErrNotExist) {
 			name += " memory"
 		}
 		lines = append(lines, name)
@@ -565,9 +566,8 @@ func (sp *space) seal() {
 	}
 }
 
-// unseal checks the password against the store's public U, or on init sets
-// it, loads every cryptobox on disk that is not in memory yet and stores on
-// disk every secret add kept only in memory.
+// unseal checks the password against the store's public U and loads every
+// cryptobox on disk that is not in memory yet; on init it sets the password.
 func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex) error {
 	if len(password) == 0 {
 		return errors.New("empty password")
@@ -601,7 +601,9 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 		if err := writeNew(st.unsealPath(), strings.TrimSpace(encodeKey(salt))+" "+encodeKey(pub)); err != nil {
 			return err
 		}
-	} else if *pub != *unsealPub {
+		return nil
+	}
+	if *pub != *unsealPub {
 		return errors.New("wrong password")
 	}
 	entries, err := os.ReadDir(st.secretsDir())
@@ -627,18 +629,6 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 		}
 		if err != nil {
 			failed = append(failed, err)
-		}
-	}
-	for name, value := range sp.secrets {
-		if _, err := os.Lstat(st.secretPath(name)); value.memoryOnly || !errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		cryptobox, err := makeBox(pub, value.value())
-		if err == nil {
-			err = writeNew(st.secretPath(name), cryptobox)
-		}
-		if err != nil {
-			failed = append(failed, fmt.Errorf("%s not stored: %w", name, err))
 		}
 	}
 	return errors.Join(failed...)
