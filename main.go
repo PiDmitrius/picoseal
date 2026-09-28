@@ -18,7 +18,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"encoding/base64"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"io"
@@ -38,9 +38,16 @@ const (
 	// buffer of the tty driver, which discards the rest without telling anyone.
 	maxValue    = 64 << 10
 	maxTerminal = 4095
-	maxBox      = (maxValue+box.AnonymousOverhead+2)/3*4 + 1
-	binPath     = "/usr/local/bin/picoseal"
+	// block pads what a cryptobox holds, so its size tells the secret's
+	// length only to within block bytes.
+	block   = 64
+	maxBox  = (((maxValue/block+1)*block+box.AnonymousOverhead)*8+4)/5 + 1
+	binPath = "/usr/local/bin/picoseal"
 )
+
+// text writes keys and cryptoboxes in lowercase unpadded base32: letters and
+// digits only, so a double click selects one whole.
+var text = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
 
 // version is the release tag, set when a release is built.
 var version = "dev"
@@ -117,7 +124,7 @@ memory, and unseal reloads them.
                    unseal, with their state: unsealed, sealed, or memory for
                    those add keeps
   remove <name>    Delete a secret from memory and disk
-  pubkey           Print the session public key
+  pubkey           Print the session public key, root's to anyone
   export <pubkey>  Put stdin, read the same way, in a cryptobox for the session
                    with <pubkey> and print it
   import           Open the cryptobox on stdin, as export prints it, read the
@@ -128,8 +135,8 @@ memory, and unseal reloads them.
   --user           Use the caller's own space, in memory only, instead of
                    root's
 
-Every command but export and version needs root; --user takes the caller's own
-space instead, in memory only. Only root reaches root's secrets.
+Every command but export, version and pubkey needs root; --user takes the
+caller's own space instead, in memory only. Only root reaches root's secrets.
 `, version, binPath, maxTerminal, maxValue)
 }
 
@@ -141,7 +148,7 @@ func checkName(name string) error {
 }
 
 func parseKey(s string) (*[32]byte, bool) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(s))
+	raw, err := text.DecodeString(strings.ToLower(strings.TrimSpace(s)))
 	if err != nil || len(raw) != 32 {
 		return nil, false
 	}
@@ -151,19 +158,24 @@ func parseKey(s string) (*[32]byte, bool) {
 }
 
 func encodeKey(key *[32]byte) string {
-	return base64.RawURLEncoding.EncodeToString(key[:]) + "\n"
+	return text.EncodeToString(key[:]) + "\n"
 }
 
+// makeBox pads value with 0x80 and zeros to a whole block and seals it.
 func makeBox(pub *[32]byte, value []byte) (string, error) {
-	raw, err := box.SealAnonymous(nil, value, pub, rand.Reader)
+	padded := make([]byte, (len(value)/block+1)*block)
+	defer clear(padded)
+	copy(padded, value)
+	padded[len(value)] = 0x80
+	raw, err := box.SealAnonymous(nil, padded, pub, rand.Reader)
 	if err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(raw) + "\n", nil
+	return text.EncodeToString(raw) + "\n", nil
 }
 
 func openBox(data []byte, pub, priv *[32]byte) ([]byte, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
+	raw, err := text.DecodeString(strings.ToLower(strings.TrimSpace(string(data))))
 	if err != nil || len(raw) <= box.AnonymousOverhead {
 		return nil, errors.New("not a cryptobox")
 	}
@@ -171,7 +183,15 @@ func openBox(data []byte, pub, priv *[32]byte) ([]byte, error) {
 	if !ok {
 		return nil, errOther
 	}
-	return value, nil
+	end := len(value) - 1
+	for end >= 0 && value[end] == 0 {
+		end--
+	}
+	if end < 0 || value[end] != 0x80 || len(value)%block != 0 {
+		clear(value)
+		return nil, errors.New("not a cryptobox")
+	}
+	return value[:end], nil
 }
 
 func asRoot() error {

@@ -430,7 +430,7 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 	switch {
 	case user && uid == s.root:
 		return nil, errRootUser
-	case !user && uid != s.root:
+	case !user && uid != s.root && command != "pubkey":
 		return nil, errRoot
 	}
 	s.mu.Lock()
@@ -442,13 +442,17 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 			return nil, err
 		}
 	}
-	sp := s.spaces[uid]
+	owner := uid
+	if !user {
+		owner = s.root
+	}
+	sp := s.spaces[owner]
 	if sp == nil {
 		sp = &space{secrets: map[string]*locked{}}
-		if uid != s.root {
+		if owner != s.root {
 			sp.users = s.users
 		}
-		s.spaces[uid] = sp
+		s.spaces[owner] = sp
 	}
 	switch command {
 	case "pubkey":

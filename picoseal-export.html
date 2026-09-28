@@ -86,27 +86,43 @@ function blake2b(input, outlen) {
 }
 
 // makeCryptobox matches picoseal export: crypto_box_seal of the text without
-// one trailing newline, as one line of unpadded base64url.
+// one trailing newline, padded with 0x80 and zeros to a whole 64-byte block, as
+// one line of lowercase unpadded base32.
+const base32 = "abcdefghijklmnopqrstuvwxyz234567";
 function makeCryptobox(pubkey, text) {
-  pubkey = pubkey.trim();
-  if (!/^[A-Za-z0-9_-]{43}$/.test(pubkey)) throw new Error("not a pubkey");
-  const pk = Uint8Array.from(atob(pubkey.replace(/-/g, "+").replace(/_/g, "/") + "="), c => c.charCodeAt(0));
+  pubkey = pubkey.trim().toLowerCase();
+  if (!/^[a-z2-7]{52}$/.test(pubkey)) throw new Error("not a pubkey");
+  const pk = new Uint8Array(32);
+  for (let i = 0, bits = 0, value = 0, n = 0; i < pubkey.length; i++) {
+    value = (value << 5 | base32.indexOf(pubkey[i])) & 0xfff;
+    bits += 5;
+    if (bits >= 8) pk[n++] = value >> (bits -= 8) & 0xff;
+  }
   if (new TextEncoder().encode(text).length > 65536) throw new Error("secret exceeds 65536 bytes");
   const message = new TextEncoder().encode(text.replace(/\n$/, ""));
   if (message.length === 0) throw new Error("empty secret");
+  const padded = new Uint8Array((Math.floor(message.length / 64) + 1) * 64);
+  padded.set(message);
+  padded[message.length] = 0x80;
+  message.fill(0);
   const ephemeral = nacl.box.keyPair();
   const nonce = new Uint8Array(64);
   nonce.set(ephemeral.publicKey);
   nonce.set(pk, 32);
-  const box = nacl.box(message, blake2b(nonce, 24), pk, ephemeral.secretKey);
+  const box = nacl.box(padded, blake2b(nonce, 24), pk, ephemeral.secretKey);
   ephemeral.secretKey.fill(0);
-  message.fill(0);
+  padded.fill(0);
   const raw = new Uint8Array(32 + box.length);
   raw.set(ephemeral.publicKey);
   raw.set(box, 32);
-  let binary = "";
-  for (const byte of raw) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  let out = "";
+  let bits = 0, value = 0;
+  for (const byte of raw) {
+    value = (value << 8 | byte) & 0xfff;
+    for (bits += 8; bits >= 5; bits -= 5) out += base32[value >> (bits - 5) & 31];
+  }
+  if (bits > 0) out += base32[value << (5 - bits) & 31];
+  return out;
 }
 
 if (typeof document !== "undefined") {

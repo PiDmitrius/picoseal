@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/nacl/box"
 )
 
 // service starts a service on a fresh socket and store and makes the test's
@@ -769,5 +771,48 @@ func TestUserSpaceStaysInMemory(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(base); len(entries) != 1 {
 		t.Fatalf("a user's space must write nothing, got %v", entries)
+	}
+}
+
+func TestCryptoboxHidesTheLengthWithinABlock(t *testing.T) {
+	service(t)
+	key := pubkey(t)
+	short, full := export(t, key, "1"), export(t, key, strings.Repeat("x", block-1))
+	if len(short) != len(full) {
+		t.Fatalf("1 and %d bytes must look alike: %d and %d", block-1, len(short), len(full))
+	}
+	if next := export(t, key, strings.Repeat("x", block)); len(next) <= len(full) {
+		t.Fatal("a secret of a whole block takes the next one")
+	}
+	if strings.Trim(short, "abcdefghijklmnopqrstuvwxyz234567\n") != "" {
+		t.Fatalf("a cryptobox is lowercase base32: %q", short)
+	}
+	pub, _ := parseKey(key)
+	raw, _ := box.SealAnonymous(nil, []byte("unpadded"), pub, rand.Reader)
+	if _, err := importBox(t, text.EncodeToString(raw)); err == nil || err.Error() != "not a cryptobox" {
+		t.Fatalf("an unpadded cryptobox must be refused, got %v", err)
+	}
+}
+
+func TestAnyoneTakesRootsPubkey(t *testing.T) {
+	s := newServer(0)
+	previous := base
+	base = t.TempDir()
+	defer func() { base = previous }()
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := s.do(0, false, "pubkey", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.do(1000, false, "pubkey", "", nil); err != nil || string(got) != string(root) {
+		t.Fatalf("a user must get root's pubkey, got %q, %v", got, err)
+	}
+	if _, err := s.do(1000, false, "import", "", nil); err == nil || err.Error() != errRoot.Error() {
+		t.Fatalf("only root imports in root's space, got %v", err)
+	}
+	if own, err := s.do(1000, true, "pubkey", "", nil); err != nil || string(own) == string(root) {
+		t.Fatalf("--user takes the user's own pubkey, got %q, %v", own, err)
 	}
 }
