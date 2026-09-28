@@ -12,19 +12,17 @@ body { font: 15px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 2rem auto
 label { display: block; margin-top: 1rem; font-weight: 600; }
 input, textarea { width: 100%; box-sizing: border-box; font: 14px ui-monospace, monospace; padding: .5rem; }
 textarea { height: 6rem; resize: vertical; }
-#copy { margin-top: .75rem; width: 140px; padding: 12px 0; font-family: inherit; font-size: 18px; line-height: 1.2; color: #fff; background: #0055a2; border: 1px solid #0055a2; cursor: pointer; }
+#copy { margin-top: .75rem; width: 140px; padding: 12px 0; font-family: inherit; font-size: 18px; line-height: 1.2; color: #fff; background: #0055a2; border: 0; outline: 0; cursor: pointer; transition: background .15s; }
 #copy:hover { background: #003366; }
-#copy:focus { outline: 2px solid #0055a2; outline-offset: 2px; }
-#copy:disabled { background: #9aa7b4; border-color: #9aa7b4; cursor: default; }
+#copy:disabled { background: #9aa7b4; cursor: default; }
+#copy.done { background: #1a7f37; }
+#copy.failed { background: #a00; }
 #status { min-height: 1.5em; font-weight: 600; color: #a00; }
 #cryptobox { word-break: break-all; }
 </style>
 </head>
 <body>
 <h1>picoseal</h1>
-<p>Puts a secret in a cryptobox for one picoseal session, as <code>picoseal export</code>
-does, as you type. Everything happens in this page; the host opens the cryptobox
-with <code>picoseal import</code>.</p>
 <label for="pubkey">Public key</label>
 <input id="pubkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="output of picoseal pubkey">
 <label for="secret">Secret</label>
@@ -132,7 +130,12 @@ if (typeof document !== "undefined") {
   const show = text => {
     clearTimeout(shown);
     $("copy").textContent = text;
-    shown = setTimeout(() => $("copy").textContent = "Copy", 2000);
+    $("copy").classList.toggle("done", text === "Copied!");
+    $("copy").classList.toggle("failed", text === "Not copied");
+    shown = setTimeout(() => {
+      $("copy").textContent = "Copy";
+      $("copy").classList.remove("done", "failed");
+    }, 2000);
   };
   const copy = async () => {
     $("cryptobox").select();
