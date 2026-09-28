@@ -5,25 +5,27 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>picoseal</title>
+<title>picoseal-export</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%2215%22%20fill%3D%22%238b1e2d%22/%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%2211%22%20fill%3D%22none%22%20stroke%3D%22%23e8c7a0%22%20stroke-width%3D%221.5%22/%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2213.5%22%20r%3D%223%22%20fill%3D%22%23e8c7a0%22/%3E%3Cpath%20d%3D%22M14.6%2015.5h2.8l1%206h-4.8z%22%20fill%3D%22%23e8c7a0%22/%3E%3C/svg%3E">
 <style>
 body { font: 15px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
 label { display: block; margin-top: 1rem; font-weight: 600; }
-input, textarea { width: 100%; box-sizing: border-box; font: 14px ui-monospace, monospace; padding: .5rem; outline: 0; }
+input, textarea { width: 100%; box-sizing: border-box; font: 14px ui-monospace, monospace; padding: .5rem; border: 1px solid #bbb; border-radius: 0; outline: 0; }
+input:focus, textarea:focus { border-color: #222; box-shadow: 0 0 0 1px #222; }
 textarea { height: 6rem; resize: vertical; }
 #copy { margin-top: .75rem; width: 140px; padding: 12px 0; font-family: inherit; font-size: 18px; line-height: 1.2; color: #fff; background: #222; border: 0; outline: 0; cursor: pointer; }
 #copy:disabled { background: #bbb; cursor: default; }
 #copy.done { background: #555; }
 #copy.failed { background: #a00; }
 #status { min-height: 1.5em; font-weight: 600; color: #a00; }
-#cryptobox { word-break: break-all; }
+#cryptobox { word-break: break-all; transition: background .2s; }
+#cryptobox.copied { background: #eee; }
 </style>
 </head>
 <body>
-<h1>picoseal</h1>
+<h1>picoseal-export</h1>
 <label for="pubkey">PubKey</label>
-<input id="pubkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="output of picoseal pubkey">
+<input id="pubkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
 <label for="secret">Secret</label>
 <textarea id="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
 <label for="cryptobox">CryptoBox</label>
@@ -130,22 +132,36 @@ if (typeof document !== "undefined") {
     clearTimeout(shown);
     $("copy").className = state;
     $("copy").textContent = text;
+    $("cryptobox").classList.toggle("copied", state === "done");
     shown = setTimeout(() => {
       $("copy").className = "";
       $("copy").textContent = "Copy";
+      $("cryptobox").classList.remove("copied");
     }, ms);
   };
-  const copy = async () => {
-    $("cryptobox").select();
-    if (!document.execCommand("copy")) {
-      try {
-        await navigator.clipboard.writeText($("cryptobox").value);
-      } catch {
-        flash("failed", "Not copied", 2000);
-        return;
-      }
+  // copyText writes the clipboard without moving the focus: a page over plain
+  // http has no clipboard API, so it copies from a hidden field and gives the
+  // focus back.
+  const copyText = async text => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const focused = document.activeElement, field = document.createElement("textarea");
+      field.value = text;
+      field.style.position = "fixed";
+      field.style.opacity = "0";
+      document.body.append(field);
+      field.select();
+      const ok = document.execCommand("copy");
+      field.remove();
+      focused?.focus();
+      return ok;
     }
-    flash("done", "Copied!", 1000);
+  };
+  const copy = async () => {
+    if (await copyText($("cryptobox").value)) flash("done", "Copied!", 1000);
+    else flash("failed", "Not copied", 2000);
   };
   const update = () => {
     fail("");
