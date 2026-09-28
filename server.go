@@ -240,7 +240,7 @@ func cmdServe(args []string) error {
 	if err := os.Chmod(sockPath, 0o666); err != nil {
 		return err
 	}
-	s := newServer(0)
+	s := newServer(rootUID)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, unix.SIGTERM, os.Interrupt)
 	go func() {

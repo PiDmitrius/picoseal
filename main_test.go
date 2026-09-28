@@ -33,12 +33,12 @@ func userService(t *testing.T) (string, *server) {
 
 func serviceFor(t *testing.T, root int) (string, *server) {
 	t.Helper()
-	previousBase, previousSock := base, sockPath
+	previousBase, previousSock, previousRoot := base, sockPath, rootUID
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	base, sockPath = dir, filepath.Join(dir, "sock")
+	base, sockPath, rootUID = dir, filepath.Join(dir, "sock"), root
 	deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
 		priv = new([32]byte)
 		copy(priv[:], argon2.IDKey(password, salt[:], 1, 64, 1, 32))
@@ -52,7 +52,7 @@ func serviceFor(t *testing.T, root int) (string, *server) {
 	go s.listen(listener)
 	t.Cleanup(func() {
 		listener.Close()
-		base, sockPath = previousBase, previousSock
+		base, sockPath, rootUID = previousBase, previousSock, previousRoot
 	})
 	return sockPath, s
 }
@@ -814,5 +814,21 @@ func TestAnyoneTakesRootsPubkey(t *testing.T) {
 	}
 	if own, err := s.do(1000, true, "pubkey", "", nil); err != nil || string(own) == string(root) {
 		t.Fatalf("--user takes the user's own pubkey, got %q, %v", own, err)
+	}
+}
+
+func TestRightsAreCheckedBeforeStdin(t *testing.T) {
+	previousSock, previousRoot := sockPath, rootUID
+	sockPath, rootUID = filepath.Join(t.TempDir(), "none"), os.Getuid()+1
+	defer func() { sockPath, rootUID = previousSock, previousRoot }()
+	if _, err := run(t, "secret", "add", "x"); err == nil || err.Error() != errRoot.Error() {
+		t.Fatalf("a user must be sent to root before any input, got %v", err)
+	}
+	if _, err := run(t, "", "pubkey"); err == nil || err.Error() == errRoot.Error() {
+		t.Fatalf("pubkey is anyone's and goes to the service, got %v", err)
+	}
+	rootUID = os.Getuid()
+	if _, err := run(t, "secret", "--user", "add", "x"); err == nil || err.Error() != errRootUser.Error() {
+		t.Fatalf("root must be refused --user before any input, got %v", err)
 	}
 }

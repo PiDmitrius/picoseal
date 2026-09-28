@@ -177,6 +177,7 @@ if (typeof document !== "undefined") {
   };
   $("pubkey").oninput = update;
   $("secret").oninput = update;
+  $("copy").onmousedown = e => e.preventDefault();
   $("copy").onclick = copy;
   update();
 }

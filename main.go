@@ -52,6 +52,9 @@ var text = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(ba
 // version is the release tag, set when a release is built.
 var version = "dev"
 
+// rootUID is the uid whose space is root's; tests take their own.
+var rootUID = 0
+
 var (
 	base        = "/etc/picoseal"
 	sockPath    = "/run/picoseal.sock"
@@ -248,8 +251,15 @@ var reads = map[string]struct {
 // remote checks the arguments with the service's own parser before it reads
 // stdin, sends them to the service and prints its answer.
 func remote(args []string, command string) error {
-	if _, _, _, err := parse(args); err != nil {
+	user, _, _, err := parse(args)
+	if err != nil {
 		return err
+	}
+	switch euid := os.Geteuid(); {
+	case user && euid == rootUID:
+		return errRootUser
+	case !user && euid != rootUID && command != "pubkey":
+		return errRoot
 	}
 	var payload []byte
 	if in, ok := reads[command]; ok {

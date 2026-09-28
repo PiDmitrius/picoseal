@@ -1,4 +1,4 @@
-module github.com/PiDmitrius/picoseal
+module github.com/PiDmitrius/picoseal/v2
 
 go 1.25.0
 
