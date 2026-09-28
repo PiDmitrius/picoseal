@@ -5,9 +5,9 @@
 // 0, and with --user the caller's own; every other command is a client of that
 // socket, except export, which puts stdin in a cryptobox for a public key
 // alone.
-// A space whose store init has set up also keeps every secret on disk as a
-// cryptobox for U, which Argon2id derives from a password and a random salt;
-// the service forgets U once the store is loaded.
+// A space whose store init has set up also keeps every secret add keeps on
+// disk as a cryptobox for U, which Argon2id derives from a password and a
+// random salt; the service forgets U once the store is loaded.
 // Stores live under /etc/picoseal, root's at the top and each user's in
 // users/<uid>, and the service takes the path from the uid, never from a
 // request. Permissions are the whole boundary: only root reaches root's

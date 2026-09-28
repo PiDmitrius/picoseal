@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -616,6 +617,46 @@ func TestAddeStaysInMemory(t *testing.T) {
 	}
 	seal(t)
 	if got := list(t); got != "kept sealed\n" {
+		t.Fatalf("list: %q", got)
+	}
+}
+
+func TestMemoryLimitTakesTheTightestCgroup(t *testing.T) {
+	root := t.TempDir()
+	leaf := filepath.Join(root, "system.slice", "picoseal.service")
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(leaf, "memory.max"), []byte("max\n"), 0o644)
+	if got := memoryLimit(root, "/system.slice/picoseal.service"); got != math.MaxUint64 {
+		t.Fatalf("no limit, got %d", got)
+	}
+	os.WriteFile(filepath.Join(root, "system.slice", "memory.max"), []byte("134217728\n"), 0o644)
+	if got := memoryLimit(root, "/system.slice/picoseal.service"); got != 134217728 {
+		t.Fatalf("the slice's limit binds, got %d", got)
+	}
+}
+
+func TestStoreNeedsNoDirectoryUntilInit(t *testing.T) {
+	service(t)
+	base = filepath.Join(base, "etc")
+	if _, err := run(t, "temp", "adde", "temp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := add(t, "kept", "value"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(base); !os.IsNotExist(err) {
+		t.Fatal("memory only must create nothing")
+	}
+	if err := unseal(t, "init", "pass"); err != nil {
+		t.Fatal(err)
+	}
+	seal(t)
+	if err := unseal(t, "unseal", "pass"); err != nil {
+		t.Fatal(err)
+	}
+	if got := list(t); got != "kept\n" {
 		t.Fatalf("list: %q", got)
 	}
 }

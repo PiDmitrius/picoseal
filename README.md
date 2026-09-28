@@ -39,7 +39,7 @@ from a terminal, under 4095 bytes, or a whole pipe, up to 65536 bytes of secret
 counting the one trailing newline they strip; a piped cryptobox may wrap or end
 in CRLF.
 `add` and `adde` refuse to replace an existing name: rotate with `remove` then
-`add`.
+the same command again.
 
 `add`, `adde` and `open` keep secrets; `export` and `import` make and open
 cryptoboxes without keeping anything.

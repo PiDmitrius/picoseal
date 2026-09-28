@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -646,9 +647,12 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 // deriveU computes U from the salt and the password with Argon2id and gives
 // its memory back to the system at once.
 var deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
-	if limit, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		if max, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64); err == nil && max < argonMemory<<10+64<<20 {
-			return nil, nil, fmt.Errorf("the store password needs %d MiB of memory, the cgroup allows %d MiB", argonMemory>>10+64, max>>20)
+	self, _ := os.ReadFile("/proc/self/cgroup")
+	for _, line := range strings.Split(string(self), "\n") {
+		if path, ok := strings.CutPrefix(line, "0::"); ok {
+			if max := memoryLimit("/sys/fs/cgroup", path); max < argonMemory<<10+64<<20 {
+				return nil, nil, fmt.Errorf("the store password needs %d MiB of memory, the cgroup allows %d MiB", argonMemory>>10+64, max>>20)
+			}
 		}
 	}
 	out := argon2.IDKey(password, salt[:], 3, argonMemory, 1, 32)
@@ -657,6 +661,20 @@ var deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err er
 	priv = new([32]byte)
 	copy(priv[:], out)
 	return publicKey(priv), priv, nil
+}
+
+// memoryLimit is the smallest memory.max from the cgroup at path up to root.
+func memoryLimit(root, path string) uint64 {
+	limit := uint64(math.MaxUint64)
+	for dir := filepath.Join(root, path); ; dir = filepath.Dir(dir) {
+		data, _ := os.ReadFile(filepath.Join(dir, "memory.max"))
+		if max, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err == nil {
+			limit = min(limit, max)
+		}
+		if dir == root || dir == filepath.Dir(dir) {
+			return limit
+		}
+	}
 }
 
 func publicKey(priv *[32]byte) *[32]byte {
