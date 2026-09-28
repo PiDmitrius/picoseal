@@ -29,11 +29,13 @@ import (
 // is the one parser of those arguments: the client runs it before it reads
 // stdin, and the service runs it again on what arrives. The answer is "ok" or
 // "error <message>" on the first line and the payload after it. A client gets
-// a few seconds to send its request, and each uid but root only so many at
-// once, so a stuck or hostile client cannot hold the service for anyone else.
-// Requests are read side by side but run one at a time under the server's one
-// lock, Argon2 included: everything a request does runs as in a single thread,
-// and nothing else in the service locks. Stored values rest in locked pages; a request, its answer and Argon2 hold working copies in
+// a few seconds to send its request. Each uid but root holds only so many
+// connections, and the rest are turned away at once; root is never turned
+// away. Requests are read side by side but run one at a time under the
+// server's one lock, Argon2 included: everything a request does runs as in a
+// single thread, and nothing else in the service locks. A user's space holds
+// only so many names, in memory and on disk together. Stored values rest in
+// locked pages; a request, its answer and Argon2 hold working copies in
 // ordinary memory, cleared or given back to the system once they are done.
 
 const (
@@ -41,9 +43,9 @@ const (
 	argonMemory   = 1 << 20 // KiB
 	maxUIDClients = 8
 	timeout       = 10 * time.Second
-	// userPages caps the locked pages of one user's space, and when the
-	// service's memlock limit binds, all users together get at most half of
-	// it, so root always has room.
+	// userPages caps the locked pages and the names of one user's space, and
+	// when the service's memlock limit binds, all users together get at most
+	// half of it, so root always has room.
 	userPages = 256
 )
 
@@ -127,12 +129,11 @@ func (sp *space) free(l *locked) {
 type server struct {
 	mu     sync.Mutex
 	spaces map[int]*space
-	active map[int]int
 	users  *budget
 }
 
 func newServer() *server {
-	return &server{spaces: map[int]*space{}, active: map[int]int{}, users: usersBudget()}
+	return &server{spaces: map[int]*space{}, users: usersBudget()}
 }
 
 // store is a space's directory: unseal holds the password's salt and the
@@ -251,22 +252,52 @@ func cmdServe(args []string) error {
 	return s.listen(listener)
 }
 
+// listen alone counts the connections of each uid but root, so turning one
+// away never waits for a request that runs.
 func (s *server) listen(listener net.Listener) error {
-	slots := make(chan struct{}, maxClients)
+	active, total := map[int]int{}, 0
+	done, refusing := make(chan int, maxClients), make(chan struct{}, maxClients)
 	for {
-		slots <- struct{}{}
 		conn, err := listener.Accept()
 		if errors.Is(err, net.ErrClosed) {
 			return err
 		}
 		if err != nil {
-			<-slots
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		for len(done) > 0 {
+			active[<-done]--
+			total--
+		}
+		unixConn := conn.(*net.UnixConn)
+		uid, err := peerUID(unixConn)
+		switch {
+		case err != nil:
+			conn.Close()
+			continue
+		case uid != 0 && (active[uid] >= maxUIDClients || total >= maxClients):
+			select {
+			case refusing <- struct{}{}:
+				go func() {
+					drain(unixConn)
+					io.WriteString(conn, "error too many requests at once\n")
+					conn.Close()
+					<-refusing
+				}()
+			default:
+				conn.Close()
+			}
+			continue
+		case uid != 0:
+			active[uid]++
+			total++
+		}
 		go func() {
-			defer func() { <-slots }()
-			s.handle(conn.(*net.UnixConn))
+			s.handle(unixConn, uid)
+			if uid != 0 {
+				done <- uid
+			}
 		}()
 	}
 }
@@ -288,28 +319,8 @@ func peerUID(conn *net.UnixConn) (int, error) {
 	return int(cred.Uid), nil
 }
 
-func (s *server) handle(conn *net.UnixConn) {
+func (s *server) handle(conn *net.UnixConn, uid int) {
 	defer conn.Close()
-	uid, err := peerUID(conn)
-	if err != nil {
-		return
-	}
-	s.mu.Lock()
-	busy := uid != 0 && s.active[uid] >= maxUIDClients
-	if !busy {
-		s.active[uid]++
-	}
-	s.mu.Unlock()
-	if busy {
-		drain(conn)
-		io.WriteString(conn, "error too many requests at once\n")
-		return
-	}
-	defer func() {
-		s.mu.Lock()
-		s.active[uid]--
-		s.mu.Unlock()
-	}()
 	conn.SetReadDeadline(time.Now().Add(timeout))
 	reply, err := s.answer(conn, uid)
 	defer clear(reply)
@@ -476,6 +487,11 @@ func (sp *space) add(st store, name string, value []byte, memoryOnly bool) error
 	}
 	if _, err := os.Lstat(st.secretPath(name)); err == nil {
 		return fmt.Errorf("%s already exists", name)
+	}
+	if names, err := sp.list(st); err != nil {
+		return err
+	} else if sp.users != nil && bytes.Count(names, []byte("\n")) >= userPages {
+		return errors.New("this space holds as much as it may")
 	}
 	var unsealPub *[32]byte
 	if !memoryOnly {

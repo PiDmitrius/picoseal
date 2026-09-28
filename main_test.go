@@ -19,7 +19,7 @@ import (
 
 // service starts a service on a fresh socket and store root and points the
 // commands at it as --user callers.
-func service(t *testing.T) string {
+func service(t *testing.T) (string, *server) {
 	t.Helper()
 	if os.Getuid() == 0 {
 		t.Skip("the service tests run as a user: root refuses --user")
@@ -39,12 +39,13 @@ func service(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go newServer().listen(listener)
+	s := newServer()
+	go s.listen(listener)
 	t.Cleanup(func() {
 		listener.Close()
 		base, sockPath, asUser = previousBase, previousSock, previousUser
 	})
-	return sockPath
+	return sockPath, s
 }
 
 func userStore() store {
@@ -350,9 +351,9 @@ func TestExportRefusesAMalformedPubkey(t *testing.T) {
 }
 
 func TestNestedCryptoboxesTravelThroughTwoServices(t *testing.T) {
-	outer := service(t)
+	outer, _ := service(t)
 	outerKey := pubkey(t)
-	inner := service(t)
+	inner, _ := service(t)
 	innerKey := pubkey(t)
 
 	const secret = "line1\nline2 $with `chars`"
@@ -456,7 +457,7 @@ func TestStoreBehindALinkIsRefused(t *testing.T) {
 }
 
 func TestIdleClientsHoldOnlyTheirOwnUID(t *testing.T) {
-	service(t)
+	_, s := service(t)
 	var idle []net.Conn
 	defer func() {
 		for _, c := range idle {
@@ -471,8 +472,12 @@ func TestIdleClientsHoldOnlyTheirOwnUID(t *testing.T) {
 		idle = append(idle, c)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if _, err := request([]string{"--user", "list"}, nil); err == nil {
-		t.Fatal("a uid past its share of connections must be turned away")
+	s.mu.Lock()
+	start := time.Now()
+	_, err := request([]string{"--user", "list"}, nil)
+	s.mu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "too many") || time.Since(start) > time.Second {
+		t.Fatalf("a uid past its share of connections must be turned away at once, even while a request runs, got %v", err)
 	}
 	idle[0].Close()
 	idle = idle[1:]
@@ -730,5 +735,24 @@ func TestSilentServiceIsSaidPlainly(t *testing.T) {
 	}()
 	if _, err := request([]string{"list"}, nil); err == nil || !strings.Contains(err.Error(), "stopped before it answered") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUserSpaceHoldsOnlySoManyNames(t *testing.T) {
+	service(t)
+	if err := unseal(t, "init", "pass"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range userPages {
+		if err := add(t, fmt.Sprintf("n%d", i), "v"); err != nil {
+			t.Fatal(err)
+		}
+		if i == userPages/2 {
+			seal(t)
+		}
+	}
+	seal(t)
+	if err := add(t, "one-more", "v"); err == nil || !strings.Contains(err.Error(), "as much as it may") {
+		t.Fatalf("names on disk count too, got %v", err)
 	}
 }

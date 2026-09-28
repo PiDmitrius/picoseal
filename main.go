@@ -263,14 +263,15 @@ func request(args []string, payload []byte) ([]byte, error) {
 	for _, arg := range args {
 		header += arg + "\x00"
 	}
-	if _, err := io.WriteString(conn, header); err != nil {
-		return nil, err
-	}
-	if _, err := conn.Write(payload); err != nil {
-		return nil, err
+	_, sent := io.WriteString(conn, header)
+	if sent == nil {
+		_, sent = conn.Write(payload)
 	}
 	conn.(*net.UnixConn).CloseWrite()
 	reply, err := io.ReadAll(conn)
+	if len(reply) == 0 && sent != nil {
+		return nil, sent
+	}
 	if err != nil {
 		return nil, err
 	}
