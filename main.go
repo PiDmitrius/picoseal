@@ -1,10 +1,10 @@
 // picoseal keeps secrets for scripts in the memory of one service. picoseal
 // serve runs as root, out of reach of dumps and tracing, and holds for each
-// space a session key E and the secrets in pages locked against swap. The
-// space follows the uid the kernel reports for the socket peer: root's for uid
-// 0, and with --user the caller's own; every command but install, serve and
-// export is a client of that socket, and export puts stdin in a cryptobox for a
-// public key alone.
+// space a session key E and the secrets in pages locked against swap. The space
+// follows the uid the kernel reports for the socket peer: root's for uid 0, and
+// with --user the caller's own; pubkey gives anyone root's. Every command but
+// install, serve, export and version is a client of that socket, and export
+// puts stdin in a cryptobox for a public key alone.
 // Root's space alone may have a store, /etc/picoseal, set up by init: save
 // keeps a secret there too, as a cryptobox for U, which Argon2id derives from a
 // password and a random salt; the service forgets U once the store is loaded. A
