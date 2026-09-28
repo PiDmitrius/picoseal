@@ -177,7 +177,8 @@ root, no `sudo` beyond the lines below and no `docker` group, and the owner
 reviews and installs every script that uses a secret. A forgotten `sudo` fails,
 since picoseal works in another user's space only with `--user`;
 `sudo chmod 700 /usr/local/bin/picoseal` also keeps the agent from reaching for
-`--user`, and `install` keeps that mode. The receiving script prints nothing:
+`--user`, and `install` keeps that mode. The owner writes the receiving script,
+which prints nothing, and pins it in sudoers:
 
     #!/bin/sh
     # /etc/picoseal/scripts/receive <name>
