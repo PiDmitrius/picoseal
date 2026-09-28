@@ -5,8 +5,8 @@
 // 0, and with --user the caller's own; every command but install, serve and
 // export is a client of that socket, and export puts stdin in a cryptobox for a
 // public key alone.
-// Root's space alone may have a store, /etc/picoseal, set up by init: add keeps
-// every secret there too, as a cryptobox for U, which Argon2id derives from a
+// Root's space alone may have a store, /etc/picoseal, set up by init: save
+// keeps a secret there too, as a cryptobox for U, which Argon2id derives from a
 // password and a random salt; the service forgets U once the store is loaded. A
 // user's space lives in memory only. Permissions are the whole boundary: only
 // root reaches root's secrets, and scripts an administrator has pinned are the
@@ -94,20 +94,20 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `picoseal — secrets in locked memory for root scripts
 
 One service, picoseal serve, keeps every secret in its locked memory until it
-stops or seal. add also keeps them in a store with a password, and unseal
-reloads them from it.
+stops. save also keeps them in a store with a password: seal drops those from
+memory, and unseal reloads them.
 
   install          Copy the binary to %s
   serve            Run the service that holds the secrets
   init             Set the store password, asked twice on a terminal
   unseal           Ask the store password and load the secrets on disk into
                    memory
-  seal             Drop every secret from memory
-  add <name>       Keep stdin as <name> in memory and in the store init set up:
-                   one unechoed line from a terminal, under %d bytes, or
-                   a whole pipe, up to %d bytes counting the one trailing
-                   newline it strips
-  adde <name>      Keep stdin, read the same way, as <name> in memory only
+  seal             Drop from memory the secrets the store keeps
+  add <name>       Keep stdin as <name> in memory only: one unechoed line from
+                   a terminal, under %d bytes, or a whole pipe, up to %d bytes
+                   counting the one trailing newline it strips
+  save <name>      Keep stdin, read the same way, as <name> in memory and in
+                   the store init set up
   open <name>      Print the secret
   list             List names; "sealed" marks those on disk only, "memory"
                    those in memory only
@@ -216,7 +216,7 @@ var reads = map[string]struct {
 	limit  int
 }{
 	"add":    {"Secret", maxValue},
-	"adde":   {"Secret", maxValue},
+	"save":   {"Secret", maxValue},
 	"import": {"Cryptobox", 2 * maxBox},
 	"init":   {"Password", maxValue},
 	"unseal": {"Password", maxValue},

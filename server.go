@@ -248,7 +248,9 @@ func cmdServe(args []string) error {
 		os.Remove(sockPath)
 		s.mu.Lock()
 		for _, sp := range s.spaces {
-			sp.seal()
+			for _, value := range sp.secrets {
+				sp.free(value)
+			}
 			if sp.priv != nil {
 				sp.free(sp.priv)
 			}
@@ -401,11 +403,11 @@ func parse(args []string) (user bool, command, name string, err error) {
 		return false, "", "", errUsage
 	}
 	command, args = args[0], args[1:]
-	if user && (command == "add" || command == "init" || command == "unseal") {
-		return false, "", "", errors.New("a user's secrets stay in memory: use adde")
+	if user && (command == "save" || command == "init" || command == "unseal" || command == "seal") {
+		return false, "", "", errors.New("a user's space has no store: use add")
 	}
 	switch command {
-	case "add", "adde", "open", "remove":
+	case "add", "save", "open", "remove":
 		if len(args) != 1 {
 			return false, "", "", errUsage
 		}
@@ -469,8 +471,8 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 			err = fmt.Errorf("%w: it was made for another pubkey, one from before the service restarted or from another space", err)
 		}
 		return value, err
-	case "add", "adde":
-		return nil, sp.add(st, name, payload, command == "adde")
+	case "add", "save":
+		return nil, sp.add(st, name, payload, command == "add")
 	case "open":
 		if value, ok := sp.secrets[name]; ok {
 			return bytes.Clone(value.value()), nil
@@ -484,7 +486,7 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 	case "remove":
 		return nil, sp.remove(st, name)
 	case "seal":
-		sp.seal()
+		sp.seal(st)
 		return nil, nil
 	case "init", "unseal":
 		return nil, sp.unseal(st, payload, command == "init")
@@ -506,7 +508,7 @@ func (sp *space) add(st *store, name string, value []byte, memoryOnly bool) erro
 			return err
 		}
 		if unsealPub == nil {
-			return errors.New("no store: run picoseal init, or adde for memory only")
+			return errors.New("no store: run picoseal init, or add for memory only")
 		}
 	}
 	held, err := sp.lock(value)
@@ -573,10 +575,13 @@ func (sp *space) remove(st *store, name string) error {
 	return nil
 }
 
-func (sp *space) seal() {
+// seal drops the secrets the store keeps; unseal brings them back.
+func (sp *space) seal(st *store) {
 	for name, value := range sp.secrets {
-		sp.free(value)
-		delete(sp.secrets, name)
+		if st.holds(name) {
+			sp.free(value)
+			delete(sp.secrets, name)
+		}
 	}
 }
 

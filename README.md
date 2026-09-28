@@ -12,11 +12,11 @@ caller. Each space has a session key that lives until the service stops;
 and `import` opens that cryptobox.
 
 Secrets stay in the service's memory, in pages locked against swap and left out
-of core dumps, until the service stops or `seal`. `adde` keeps a secret there
-only; `add` also keeps it on disk, in root's store with a password, as a
-cryptobox for a key derived from that password. `unseal` takes out those
-cryptoboxes and learns to open them; `seal` puts them away and forgets how,
-while cryptoboxes sent to `pubkey` still open.
+of core dumps, until the service stops. `add` keeps a secret there only; `save`
+also keeps it on disk, in root's store with a password, as a cryptobox for a key
+derived from that password. `seal` drops the stored secrets from memory and
+forgets how to open them, and `unseal` brings them back; cryptoboxes sent to
+`pubkey` still open after `seal`.
 
 ## Commands
 
@@ -24,9 +24,9 @@ while cryptoboxes sent to `pubkey` still open.
     picoseal serve            Run the service that holds the secrets
     picoseal init             Set the store password
     picoseal unseal           Ask the store password and load the secrets on disk into memory
-    picoseal seal             Drop every secret from memory
-    picoseal add <name>       Keep stdin as <name> in memory and in the store
-    picoseal adde <name>      Keep stdin as <name> in memory only
+    picoseal seal             Drop from memory the secrets the store keeps
+    picoseal add <name>       Keep stdin as <name> in memory only
+    picoseal save <name>      Keep stdin as <name> in memory and in the store
     picoseal open <name>      Print the secret
     picoseal list             List names; "sealed" marks those on disk only, "memory" those in memory only
     picoseal remove <name>    Delete a secret from memory and disk
@@ -35,22 +35,22 @@ while cryptoboxes sent to `pubkey` still open.
     picoseal import           Open the cryptobox on stdin and print the secret
     picoseal --user ...       Use the caller's own space, in memory only, instead of root's
 
-`add`, `adde`, `export`, `import`, `init` and `unseal` read one unechoed line
+`add`, `save`, `export`, `import`, `init` and `unseal` read one unechoed line
 from a terminal, under 4095 bytes, or a whole pipe, up to 65536 bytes of secret
 counting the one trailing newline they strip; a piped cryptobox may wrap or end
 in CRLF.
-`add` and `adde` refuse to replace an existing name: rotate with `remove` then
+`add` and `save` refuse to replace an existing name: rotate with `remove` then
 the same command again.
 
-`add`, `adde` and `open` keep secrets; `export` and `import` make and open
+`add`, `save` and `open` keep secrets; `export` and `import` make and open
 cryptoboxes without keeping anything.
 
 Every command but `export` works as root, in root's space, and refuses any other
 user. `--user` works as the calling user, in that user's own space, which lives
-in memory only: `adde` keeps a secret there, and `add`, `init` and `unseal`
-are root's; root refuses `--user`. `export` needs neither the service nor root.
-Only root reaches root's secrets, and a user reaches their own only through the
-service.
+in memory only: `add` keeps a secret there, and `save`, `init`, `unseal` and
+`seal` are root's; root refuses `--user`. `export` needs neither the service nor
+root. Only root reaches root's secrets, and a user reaches their own only
+through the service.
 
 ## The service
 
@@ -82,18 +82,18 @@ that needs a secret:
 Every other command says so plainly when the service is not running. Stopping
 or restarting it drops every secret in memory and every session key: after an
 update, which is `install` and a restart, `unseal` again and deliver again what
-`adde` kept.
+`add` kept.
 
 ## Memory only
 
 Without a store, picoseal writes nothing to disk and needs no `/etc/picoseal`:
-`adde` keeps secrets until the service stops, and they are delivered again
+`add` keeps secrets until the service stops, and they are delivered again
 after it. The service while it answers, the clients and the program a secret is
 piped to hold working copies in ordinary memory while they run.
 
     sudo picoseal pubkey                                  # target
     picoseal export <pubkey> < token > gitlab.box         # anywhere
-    sudo picoseal import < gitlab.box | sudo picoseal adde gitlab  # target
+    sudo picoseal import < gitlab.box | sudo picoseal add gitlab   # target
 
 `picoseal-export.html` does what `export` does in a browser, offline and
 self-contained: paste the public key and the secret and press Export and copy,
@@ -111,9 +111,9 @@ and the run of the service it was made for.
     sudo picoseal init
 
 Only root has a store, `/etc/picoseal`. `init` sets the password, asking it
-twice on a terminal and once from a pipe. From then on `add` writes every secret
-to memory and to the store; it needs the store but not the password, and without
-a store it fails. After the service restarts or `seal`, one `unseal` loads the
+twice on a terminal and once from a pipe. From then on `save` writes a secret to
+memory and to the store; it needs the store but not the password, and without a
+store it fails. After the service restarts or `seal`, one `unseal` loads the
 stored secrets again. Of the password the store keeps only its salt and a public
 key Argon2id derives from them, so a copy of the disk opens nothing without it.
 `init` and `unseal` need about 1 GiB of memory for a moment, and so does every
@@ -128,7 +128,7 @@ then for the outer one, and each host opens its own layer:
 
     picoseal export <inner-pubkey> < token | picoseal export <outer-pubkey> > outer.box
     sudo picoseal import < outer.box > inner.box                   # outer host
-    sudo picoseal import < inner.box | sudo picoseal adde gitlab   # inner host
+    sudo picoseal import < inner.box | sudo picoseal add gitlab    # inner host
 
 Each layer grows the cryptobox by about a third, and `export` takes at most
 65536 bytes.
@@ -176,11 +176,11 @@ since picoseal works in another user's space only with `--user`;
     #!/bin/sh
     # /etc/picoseal/scripts/receive <name>
     set -eu
-    /usr/local/bin/picoseal import | /usr/local/bin/picoseal adde "$1"
+    /usr/local/bin/picoseal import | /usr/local/bin/picoseal add "$1"
 
     <agent> ALL=(root) NOPASSWD: /usr/local/bin/picoseal pubkey, /usr/local/bin/picoseal list, /etc/picoseal/scripts/receive *
 
-With a store, `add` in place of `adde` keeps the secret on disk too. The agent
+With a store, `save` in place of `add` keeps the secret on disk too. The agent
 posts `sudo picoseal pubkey`, then delivers with
 `printf '%s\n' '<cryptobox>' | sudo /etc/picoseal/scripts/receive gitlab` and
 checks with `sudo picoseal list`. `open` and a bare `import` print the secret:
