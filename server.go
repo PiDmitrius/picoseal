@@ -31,9 +31,9 @@ import (
 // "error <message>" on the first line and the payload after it. A client gets
 // a few seconds to send its request, and each uid but root only so many at
 // once, so a stuck or hostile client cannot hold the service for anyone else.
-// Each space answers one request at a time; the space table and Argon2, one
-// run at a time, are the only things spaces share. Stored values rest in
-// locked pages; a request, its answer and Argon2 hold working copies in
+// Requests are read side by side but run one at a time under the server's one
+// lock, Argon2 included: everything a request does runs as in a single thread,
+// and nothing else in the service locks. Stored values rest in locked pages; a request, its answer and Argon2 hold working copies in
 // ordinary memory, cleared or given back to the system once they are done.
 
 const (
@@ -50,7 +50,6 @@ const (
 var errNoSession = errors.New("no session key since the service started: take a fresh pubkey")
 
 type space struct {
-	mu      sync.Mutex
 	pub     *[32]byte
 	priv    *locked
 	secrets map[string]*locked
@@ -59,14 +58,9 @@ type space struct {
 }
 
 // budget counts the locked pages of all users' spaces.
-type budget struct {
-	mu         sync.Mutex
-	used, most int
-}
+type budget struct{ used, most int }
 
 func (b *budget) take(pages int) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.used+pages > b.most {
 		return false
 	}
@@ -74,11 +68,7 @@ func (b *budget) take(pages int) bool {
 	return true
 }
 
-func (b *budget) give(pages int) {
-	b.mu.Lock()
-	b.used -= pages
-	b.mu.Unlock()
-}
+func (b *budget) give(pages int) { b.used -= pages }
 
 func usersBudget() *budget {
 	var limit unix.Rlimit
@@ -139,7 +129,6 @@ type server struct {
 	spaces map[int]*space
 	active map[int]int
 	users  *budget
-	derive sync.Mutex
 }
 
 func newServer() *server {
@@ -252,7 +241,6 @@ func cmdServe(args []string) error {
 		os.Remove(sockPath)
 		s.mu.Lock()
 		for _, sp := range s.spaces {
-			sp.mu.Lock()
 			sp.seal()
 			if sp.priv != nil {
 				sp.free(sp.priv)
@@ -420,6 +408,8 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 	case !user && uid != 0:
 		return nil, errRoot
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	st := store{base}
 	if user {
 		st = store{filepath.Join(base, "users", strconv.Itoa(uid))}
@@ -427,7 +417,6 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 	if err := st.check(); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
 	sp := s.spaces[uid]
 	if sp == nil {
 		sp = &space{secrets: map[string]*locked{}}
@@ -436,9 +425,6 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 		}
 		s.spaces[uid] = sp
 	}
-	s.mu.Unlock()
-	sp.mu.Lock()
-	defer sp.mu.Unlock()
 	switch command {
 	case "pubkey":
 		if sp.priv == nil {
@@ -476,7 +462,7 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 		sp.seal()
 		return nil, nil
 	case "init", "unseal":
-		return nil, sp.unseal(st, payload, command == "init", &s.derive)
+		return nil, sp.unseal(st, payload, command == "init")
 	}
 	return nil, errUsage
 }
@@ -569,7 +555,7 @@ func (sp *space) seal() {
 
 // unseal checks the password against the store's public U and loads every
 // cryptobox on disk that is not in memory yet; on init it sets the password.
-func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex) error {
+func (sp *space) unseal(st store, password []byte, init bool) error {
 	if len(password) == 0 {
 		return errors.New("empty password")
 	}
@@ -591,9 +577,7 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 			return err
 		}
 	}
-	derive.Lock()
 	pub, priv, err := deriveU(salt, password)
-	derive.Unlock()
 	if err != nil {
 		return err
 	}
