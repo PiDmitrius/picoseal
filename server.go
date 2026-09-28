@@ -8,9 +8,9 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,13 +30,14 @@ import (
 // "error <message>" on the first line and the payload after it. A client gets
 // a few seconds to send its request, and each uid but root only so many at
 // once, so a stuck or hostile client cannot hold the service for anyone else.
-// Each space answers one request at a time; the space table and the Argon2
-// child are the only things spaces share. Stored values rest in locked pages;
-// a request, its answer and the Argon2 child hold working copies in ordinary
-// memory, cleared once they are done.
+// Each space answers one request at a time; the space table and Argon2, one
+// run at a time, are the only things spaces share. Stored values rest in
+// locked pages; a request, its answer and Argon2 hold working copies in
+// ordinary memory, cleared or given back to the system once they are done.
 
 const (
 	maxClients    = 256
+	argonMemory   = 1 << 20 // KiB
 	maxUIDClients = 8
 	timeout       = 10 * time.Second
 	// userPages caps the locked pages of one user's space, and when the
@@ -637,49 +638,20 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 	return errors.Join(failed...)
 }
 
-// deriveU runs Argon2id in a child of the service's own binary, outside the
-// service's memory.
+// deriveU computes U from the salt and the password with Argon2id and gives
+// its memory back to the system at once.
 var deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
-	child := exec.Command("/proc/self/exe", "derive", strconv.Itoa(int(argonMemory)))
-	input := append(bytes.Clone(salt[:]), password...)
-	defer clear(input)
-	child.Stdin = bytes.NewReader(input)
-	var stderr bytes.Buffer
-	child.Stderr = &stderr
-	out, err := child.Output()
-	defer clear(out)
-	if err != nil || len(out) != 32 {
-		reason := strings.TrimSpace(strings.TrimPrefix(stderr.String(), "picoseal: "))
-		if reason == "" && err != nil {
-			reason = err.Error()
+	if limit, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
+		if max, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64); err == nil && max < argonMemory<<10+64<<20 {
+			return nil, nil, fmt.Errorf("the store password needs %d MiB of memory, the cgroup allows %d MiB", argonMemory>>10+64, max>>20)
 		}
-		return nil, nil, fmt.Errorf("derive: %s", reason)
 	}
+	out := argon2.IDKey(password, salt[:], 3, argonMemory, 1, 32)
+	defer debug.FreeOSMemory()
+	defer clear(out)
 	priv = new([32]byte)
 	copy(priv[:], out)
 	return publicKey(priv), priv, nil
-}
-
-// cmdDerive reads a 32-byte salt and a password and prints U.
-func cmdDerive(args []string) error {
-	if len(args) != 1 {
-		return errUsage
-	}
-	kib, err := strconv.ParseUint(args[0], 10, 32)
-	if err != nil {
-		return errUsage
-	}
-	if limit, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		if max, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64); err == nil && max < kib<<10+64<<20 {
-			return fmt.Errorf("the store password needs %d MiB of memory, the cgroup allows %d MiB", kib>>10+64, max>>20)
-		}
-	}
-	in, err := io.ReadAll(io.LimitReader(os.Stdin, 32+maxValue))
-	if err != nil || len(in) <= 32 {
-		return errUsage
-	}
-	_, err = os.Stdout.Write(argon2.IDKey(in[32:], in[:32], 3, uint32(kib), 1, 32))
-	return err
 }
 
 func publicKey(priv *[32]byte) *[32]byte {

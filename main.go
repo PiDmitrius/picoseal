@@ -7,8 +7,7 @@
 // alone.
 // A space whose store init has set up also keeps every secret on disk as a
 // cryptobox for U, which Argon2id derives from a password and a random salt;
-// a short-lived child computes it so that the service's locked memory stays
-// small, and the service forgets U once the store is loaded.
+// the service forgets U once the store is loaded.
 // Stores live under /etc/picoseal, root's at the top and each user's in
 // users/<uid>, and the service takes the path from the uid, never from a
 // request. Permissions are the whole boundary: only root reaches root's
@@ -45,13 +44,12 @@ const (
 )
 
 var (
-	base        = "/etc/picoseal"
-	sockPath    = "/run/picoseal.sock"
-	asUser      bool
-	nameRe      = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
-	errUsage    = errors.New("usage")
-	errRoot     = errors.New("this runs as root: use sudo")
-	argonMemory = uint32(1 << 20)
+	base     = "/etc/picoseal"
+	sockPath = "/run/picoseal.sock"
+	asUser   bool
+	nameRe   = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
+	errUsage = errors.New("usage")
+	errRoot  = errors.New("this runs as root: use sudo")
 )
 
 func main() {
@@ -69,7 +67,6 @@ func main() {
 	if local, ok := map[string]func([]string) error{
 		"install": cmdInstall,
 		"serve":   cmdServe,
-		"derive":  cmdDerive,
 		"export":  cmdExport,
 	}[args[flags]]; ok {
 		for _, flag := range args[:flags] {
