@@ -127,16 +127,17 @@ func (sp *space) free(l *locked) {
 }
 
 type server struct {
+	root   int // the uid whose space is root's
 	mu     sync.Mutex
 	spaces map[int]*space
 	users  *budget
 }
 
-func newServer() *server {
-	return &server{spaces: map[int]*space{}, users: usersBudget()}
+func newServer(root int) *server {
+	return &server{root: root, spaces: map[int]*space{}, users: usersBudget()}
 }
 
-// store is a space's directory: unseal holds the password's salt and the
+// store is root's directory: unseal holds the password's salt and the
 // public U, secrets/ holds a cryptobox for U per name. The service trusts it
 // only as a root-owned directory nobody else may write, and follows no
 // symbolic link inside it.
@@ -148,15 +149,11 @@ func (st store) secretPath(name string) string {
 	return filepath.Join(st.secretsDir(), name)
 }
 
-// check refuses a store if any directory from /etc/picoseal down to its
-// secrets is a link, not root's, or writable by others; a missing directory
-// is fine, it holds nothing yet.
+// check refuses the store if it or its secrets directory is a link, not
+// root's, or writable by others; a missing directory is fine, it holds nothing
+// yet.
 func (st store) check() error {
-	chain := []string{base}
-	if st.dir != base {
-		chain = append(chain, filepath.Dir(st.dir), st.dir)
-	}
-	for _, dir := range append(chain, st.secretsDir()) {
+	for _, dir := range []string{st.dir, st.secretsDir()} {
 		var info unix.Stat_t
 		if err := unix.Lstat(dir, &info); errors.Is(err, unix.ENOENT) {
 			return nil
@@ -168,6 +165,16 @@ func (st store) check() error {
 		}
 	}
 	return nil
+}
+
+// holds reports whether the store keeps name on disk; a user's space has no
+// store.
+func (st *store) holds(name string) bool {
+	if st == nil {
+		return false
+	}
+	_, err := os.Lstat(st.secretPath(name))
+	return err == nil
 }
 
 func readFile(path string) ([]byte, error) {
@@ -234,7 +241,7 @@ func cmdServe(args []string) error {
 	if err := os.Chmod(sockPath, 0o666); err != nil {
 		return err
 	}
-	s := newServer()
+	s := newServer(0)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, unix.SIGTERM, os.Interrupt)
 	go func() {
@@ -272,11 +279,12 @@ func (s *server) listen(listener net.Listener) error {
 		}
 		unixConn := conn.(*net.UnixConn)
 		uid, err := peerUID(unixConn)
+		counted := uid != s.root
 		switch {
 		case err != nil:
 			conn.Close()
 			continue
-		case uid != 0 && (active[uid] >= maxUIDClients || total >= maxClients):
+		case counted && (active[uid] >= maxUIDClients || total >= maxClients):
 			select {
 			case refusing <- struct{}{}:
 				go func() {
@@ -289,13 +297,13 @@ func (s *server) listen(listener net.Listener) error {
 				conn.Close()
 			}
 			continue
-		case uid != 0:
+		case counted:
 			active[uid]++
 			total++
 		}
 		go func() {
 			s.handle(unixConn, uid)
-			if uid != 0 {
+			if counted {
 				done <- uid
 			}
 		}()
@@ -394,6 +402,9 @@ func parse(args []string) (user bool, command, name string, err error) {
 		return false, "", "", errUsage
 	}
 	command, args = args[0], args[1:]
+	if user && (command == "add" || command == "init" || command == "unseal") {
+		return false, "", "", errors.New("a user's secrets stay in memory: use adde")
+	}
 	switch command {
 	case "add", "adde", "open", "remove":
 		if len(args) != 1 {
@@ -414,24 +425,24 @@ func parse(args []string) (user bool, command, name string, err error) {
 // do runs a command in the space the uid and --user select.
 func (s *server) do(uid int, user bool, command, name string, payload []byte) ([]byte, error) {
 	switch {
-	case user && uid == 0:
+	case user && uid == s.root:
 		return nil, errors.New("--user is for a user other than root")
-	case !user && uid != 0:
+	case !user && uid != s.root:
 		return nil, errRoot
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := store{base}
-	if user {
-		st = store{filepath.Join(base, "users", strconv.Itoa(uid))}
-	}
-	if err := st.check(); err != nil {
-		return nil, err
+	var st *store
+	if !user {
+		st = &store{base}
+		if err := st.check(); err != nil {
+			return nil, err
+		}
 	}
 	sp := s.spaces[uid]
 	if sp == nil {
 		sp = &space{secrets: map[string]*locked{}}
-		if uid != 0 {
+		if uid != s.root {
 			sp.users = s.users
 		}
 		s.spaces[uid] = sp
@@ -461,7 +472,7 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 		if value, ok := sp.secrets[name]; ok {
 			return bytes.Clone(value.value()), nil
 		}
-		if _, err := os.Lstat(st.secretPath(name)); err == nil {
+		if st.holds(name) {
 			return nil, fmt.Errorf("%s is sealed: run picoseal unseal", name)
 		}
 		return nil, fmt.Errorf("%s: no such secret", name)
@@ -478,20 +489,12 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 	return nil, errUsage
 }
 
-func (sp *space) add(st store, name string, value []byte, memoryOnly bool) error {
+func (sp *space) add(st *store, name string, value []byte, memoryOnly bool) error {
 	if len(value) == 0 {
 		return errors.New("empty secret")
 	}
-	if _, ok := sp.secrets[name]; ok {
+	if _, ok := sp.secrets[name]; ok || st.holds(name) {
 		return fmt.Errorf("%s already exists", name)
-	}
-	if _, err := os.Lstat(st.secretPath(name)); err == nil {
-		return fmt.Errorf("%s already exists", name)
-	}
-	if names, err := sp.list(st); err != nil {
-		return err
-	} else if sp.users != nil && bytes.Count(names, []byte("\n")) >= userPages {
-		return errors.New("this space holds as much as it may")
 	}
 	var unsealPub *[32]byte
 	if !memoryOnly {
@@ -521,17 +524,20 @@ func (sp *space) add(st store, name string, value []byte, memoryOnly bool) error
 	return nil
 }
 
-func (sp *space) list(st store) ([]byte, error) {
+func (sp *space) list(st *store) ([]byte, error) {
 	lines := []string{}
 	for name := range sp.secrets {
-		if _, err := os.Lstat(st.secretPath(name)); errors.Is(err, os.ErrNotExist) {
+		if !st.holds(name) {
 			name += " memory"
 		}
 		lines = append(lines, name)
 	}
-	entries, err := os.ReadDir(st.secretsDir())
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	var entries []os.DirEntry
+	if st != nil {
+		var err error
+		if entries, err = os.ReadDir(st.secretsDir()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 	}
 	for _, entry := range entries {
 		if _, ok := sp.secrets[entry.Name()]; !ok && checkName(entry.Name()) == nil {
@@ -546,17 +552,19 @@ func (sp *space) list(st store) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func (sp *space) remove(st store, name string) error {
-	err := os.Remove(st.secretPath(name))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+func (sp *space) remove(st *store, name string) error {
+	onDisk := st.holds(name)
+	if onDisk {
+		if err := os.Remove(st.secretPath(name)); err != nil {
+			return err
+		}
 	}
 	value, found := sp.secrets[name]
 	if found {
 		sp.free(value)
 		delete(sp.secrets, name)
 	}
-	if !found && err != nil {
+	if !found && !onDisk {
 		return fmt.Errorf("%s: no such secret", name)
 	}
 	return nil
@@ -571,7 +579,7 @@ func (sp *space) seal() {
 
 // unseal checks the password against the store's public U and loads every
 // cryptobox on disk that is not in memory yet; on init it sets the password.
-func (sp *space) unseal(st store, password []byte, init bool) error {
+func (sp *space) unseal(st *store, password []byte, init bool) error {
 	if len(password) == 0 {
 		return errors.New("empty password")
 	}

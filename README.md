@@ -13,8 +13,8 @@ and `import` opens that cryptobox.
 
 Secrets stay in the service's memory, in pages locked against swap and left out
 of core dumps, until the service stops or `seal`. `adde` keeps a secret there
-only; `add` also keeps it on disk, in a store with a password, as a cryptobox
-for a key derived from that password. `unseal` takes out those cryptoboxes and
+only; `add` also keeps it on disk, in root's store with a password, as a
+cryptobox for a key derived from that password. `unseal` takes out those cryptoboxes and
 learns to open them; `seal` puts them away and forgets how, while cryptoboxes
 sent to `pubkey` still open.
 
@@ -33,7 +33,7 @@ sent to `pubkey` still open.
     picoseal pubkey           Print the session public key
     picoseal export <pubkey>  Put stdin in a cryptobox for <pubkey> and print it
     picoseal import           Open the cryptobox on stdin and print the secret
-    picoseal --user ...       Use the caller's own space instead of root's
+    picoseal --user ...       Use the caller's own space, in memory only, instead of root's
 
 `add`, `adde`, `export`, `import`, `init` and `unseal` read one unechoed line
 from a terminal, under 4095 bytes, or a whole pipe, up to 65536 bytes of secret
@@ -46,9 +46,11 @@ the same command again.
 cryptoboxes without keeping anything.
 
 Every command but `export` works as root, in root's space, and refuses any other
-user. `--user` works as the calling user, in that user's own space; root refuses
-`--user`. `export` needs neither the service nor root. Only root reaches root's
-secrets, and a user reaches their own only through the service.
+user. `--user` works as the calling user, in that user's own space, which lives
+in memory only: `adde` keeps a secret there, and `add`, `init` and `unseal`
+are root's; root refuses `--user`. `export` needs neither the service nor root.
+Only root reaches root's secrets, and a user reaches their own only through the
+service.
 
 ## The service
 
@@ -108,15 +110,13 @@ and the run of the service it was made for.
 ## A store on disk
 
     sudo picoseal init
-    picoseal --user init
 
-Root's store is `/etc/picoseal`; a user's is `/etc/picoseal/users/<uid>`, which
-only the service reads. `init` sets the password, asking it twice on a terminal
-and once from a pipe. From then on `add` writes every secret to memory and to
-the store; it needs the store but not the password, and without a store it
-fails. After the service restarts or `seal`, one `unseal` loads the stored
-secrets again. Of the password the store keeps only its salt and a public key
-Argon2id derives from them, so a copy of the disk opens nothing without it.
+Only root has a store, `/etc/picoseal`. `init` sets the password, asking it
+twice on a terminal and once from a pipe. From then on `add` writes every secret
+to memory and to the store; it needs the store but not the password, and without
+a store it fails. After the service restarts or `seal`, one `unseal` loads the
+stored secrets again. Of the password the store keeps only its salt and a public
+key Argon2id derives from them, so a copy of the disk opens nothing without it.
 `init` and `unseal` need about 1 GiB of memory for a moment, and so does every
 guess at the password. A forgotten password cannot be recovered: `seal`, remove
 `unseal` and `secrets/` from the store, `init` again and deliver the secrets

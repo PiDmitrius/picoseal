@@ -5,12 +5,10 @@
 // 0, and with --user the caller's own; every other command is a client of that
 // socket, except export, which puts stdin in a cryptobox for a public key
 // alone.
-// A space whose store init has set up also keeps every secret add keeps on
-// disk as a cryptobox for U, which Argon2id derives from a password and a
-// random salt; the service forgets U once the store is loaded.
-// Stores live under /etc/picoseal, root's at the top and each user's in
-// users/<uid>, and the service takes the path from the uid, never from a
-// request. Permissions are the whole boundary: only root reaches root's
+// Root's space alone may have a store, /etc/picoseal, set up by init: add
+// keeps every secret there too, as a cryptobox for U, which Argon2id derives
+// from a password and a random salt; the service forgets U once the store is
+// loaded. A user's space lives in memory only. Permissions are the whole boundary: only root reaches root's
 // secrets, and scripts an administrator has pinned are the only way an
 // unprivileged caller reaches one. Never pin picoseal with free arguments.
 package main
@@ -118,7 +116,8 @@ reloads them from it.
   import           Open the cryptobox on stdin, as export prints it, read the
                    same way, and print the secret
 
-  --user           Use the caller's own space instead of root's
+  --user           Use the caller's own space, in memory only, instead of
+                   root's
 
 Every command but export works as root, or with --user as the caller. Only root
 reaches root's secrets.

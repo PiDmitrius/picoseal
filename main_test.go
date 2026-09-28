@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,19 +16,27 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// service starts a service on a fresh socket and store root and points the
-// commands at it as --user callers.
+// service starts a service on a fresh socket and store and makes the test's
+// own uid its root.
 func service(t *testing.T) (string, *server) {
 	t.Helper()
-	if os.Getuid() == 0 {
-		t.Skip("the service tests run as a user: root refuses --user")
-	}
-	previousBase, previousSock, previousUser := base, sockPath, asUser
+	return serviceFor(t, os.Getuid())
+}
+
+// userService runs the test as a user of the service rather than its root.
+func userService(t *testing.T) (string, *server) {
+	t.Helper()
+	return serviceFor(t, 0)
+}
+
+func serviceFor(t *testing.T, root int) (string, *server) {
+	t.Helper()
+	previousBase, previousSock := base, sockPath
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	base, sockPath, asUser = dir, filepath.Join(dir, "sock"), true
+	base, sockPath = dir, filepath.Join(dir, "sock")
 	deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
 		priv = new([32]byte)
 		copy(priv[:], argon2.IDKey(password, salt[:], 1, 64, 1, 32))
@@ -39,17 +46,17 @@ func service(t *testing.T) (string, *server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := newServer()
+	s := newServer(root)
 	go s.listen(listener)
 	t.Cleanup(func() {
 		listener.Close()
-		base, sockPath, asUser = previousBase, previousSock, previousUser
+		base, sockPath = previousBase, previousSock
 	})
 	return sockPath, s
 }
 
-func userStore() store {
-	return store{filepath.Join(base, "users", strconv.Itoa(os.Getuid()))}
+func rootStore() store {
+	return store{base}
 }
 
 func redirect(t *testing.T, std **os.File, content string) *os.File {
@@ -79,12 +86,12 @@ func output(t *testing.T, f *os.File) string {
 	return string(data)
 }
 
-// run gives input to the client as stdin and runs it as a --user caller.
+// run gives input to the client as stdin and runs it in root's space.
 func run(t *testing.T, input string, args ...string) (string, error) {
 	t.Helper()
 	redirect(t, &os.Stdin, input)
 	out := redirect(t, &os.Stdout, "")
-	err := remote(append([]string{"--user"}, args...), args[0])
+	err := remote(args, args[0])
 	return output(t, out), err
 }
 
@@ -182,13 +189,13 @@ func TestMemoryRoundTrip(t *testing.T) {
 	if _, err := open(t, "brave"); err == nil {
 		t.Fatal("a removed secret must be gone")
 	}
-	if _, err := os.Stat(userStore().dir); !os.IsNotExist(err) {
+	if _, err := os.Stat(rootStore().secretsDir()); !os.IsNotExist(err) {
 		t.Fatal("memory only must write nothing to disk")
 	}
 }
 
 func TestSpacesFollowTheKernelUID(t *testing.T) {
-	s := newServer()
+	s := newServer(0)
 	if _, err := s.do(1000, false, "list", "-", nil); err == nil || err.Error() != errRoot.Error() {
 		t.Fatalf("a user without --user must be sent to sudo, got %v", err)
 	}
@@ -235,7 +242,7 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if err := unseal(t, "init", "pass\n"); err != nil {
 		t.Fatal(err)
 	}
-	if salt, pub, err := userStore().unsealKey(); err != nil || salt == nil || pub == nil {
+	if salt, pub, err := rootStore().unsealKey(); err != nil || salt == nil || pub == nil {
 		t.Fatalf("init must write the salt and U, got %v", err)
 	}
 	if err := unseal(t, "init", "other"); err == nil || !strings.Contains(err.Error(), "exists") {
@@ -281,7 +288,7 @@ func TestUnsealSkipsBadCryptoboxes(t *testing.T) {
 	if err := add(t, "early", "before"); err != nil {
 		t.Fatal(err)
 	}
-	st := userStore()
+	st := rootStore()
 	if err := os.WriteFile(st.secretPath("junk"), []byte("junk\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -407,14 +414,14 @@ func TestNoServiceIsSaidPlainly(t *testing.T) {
 	previous := sockPath
 	sockPath = filepath.Join(t.TempDir(), "none")
 	defer func() { sockPath = previous }()
-	if _, err := request([]string{"--user", "list"}, nil); err == nil || !strings.Contains(err.Error(), "not running") {
+	if _, err := request([]string{"list"}, nil); err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("got %v", err)
 	}
 }
 
 func TestOversizedRequestIsRefused(t *testing.T) {
 	service(t)
-	if _, err := request([]string{"--user", "add", "big"}, []byte(strings.Repeat("A", maxValue+1))); err == nil || !strings.Contains(err.Error(), "too large") {
+	if _, err := request([]string{"add", "big"}, []byte(strings.Repeat("A", maxValue+1))); err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("got %v", err)
 	}
 	if got := list(t); got != "" {
@@ -444,20 +451,24 @@ func TestUserSpaceIsCapped(t *testing.T) {
 
 func TestStoreBehindALinkIsRefused(t *testing.T) {
 	service(t)
-	st := userStore()
-	if err := os.MkdirAll(filepath.Dir(st.dir), 0o700); err != nil {
+	if err := os.Symlink(t.TempDir(), rootStore().secretsDir()); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(base, st.dir); err != nil {
+	if _, err := request([]string{"list"}, nil); err == nil || !strings.Contains(err.Error(), "not a store") {
+		t.Fatalf("secrets behind a link: got %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "store")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := request([]string{"--user", "list"}, nil); err == nil || !strings.Contains(err.Error(), "not a store") {
-		t.Fatalf("got %v", err)
+	base = link
+	if _, err := request([]string{"list"}, nil); err == nil || !strings.Contains(err.Error(), "not a store") {
+		t.Fatalf("a store behind a link: got %v", err)
 	}
 }
 
 func TestIdleClientsHoldOnlyTheirOwnUID(t *testing.T) {
-	_, s := service(t)
+	_, s := userService(t)
 	var idle []net.Conn
 	defer func() {
 		for _, c := range idle {
@@ -518,17 +529,6 @@ func TestUsersTogetherLeaveRootRoom(t *testing.T) {
 	root.free(l)
 }
 
-func TestLinkAboveTheStoreIsRefused(t *testing.T) {
-	service(t)
-	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(base, "users")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := request([]string{"--user", "list"}, nil); err == nil || !strings.Contains(err.Error(), "not a store") {
-		t.Fatalf("got %v", err)
-	}
-}
-
 func TestNamesAreCheckedBeforeTheyReachTheService(t *testing.T) {
 	service(t)
 	if err := adde(t, "-", "dash"); err != nil {
@@ -565,7 +565,7 @@ func TestSyntaxIsCheckedBeforeStdin(t *testing.T) {
 	previous := sockPath
 	sockPath = filepath.Join(t.TempDir(), "none")
 	defer func() { sockPath = previous }()
-	for _, args := range [][]string{{"add", "BAD"}, {"add"}, {"unseal", "extra"}, {"init", "extra"}, {"frob"}, {"open", "a", "b"}} {
+	for _, args := range [][]string{{"add", "BAD"}, {"add"}, {"unseal", "extra"}, {"init", "extra"}, {"--user", "init"}, {"--user", "add", "x"}, {"frob"}, {"open", "a", "b"}} {
 		if _, err := run(t, "secret", args...); err == nil || strings.Contains(err.Error(), "not running") {
 			t.Fatalf("%v must be refused before the service is asked, got %v", args, err)
 		}
@@ -589,7 +589,7 @@ func TestWriteNewKeepsWhatIsThere(t *testing.T) {
 
 func TestMalformedUnsealFileIsKept(t *testing.T) {
 	service(t)
-	st := userStore()
+	st := rootStore()
 	if err := st.makeDirs(); err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +636,7 @@ func TestAddeStaysInMemory(t *testing.T) {
 	if err := unseal(t, "unseal", "pass"); err != nil {
 		t.Fatal(err)
 	}
-	if entries, _ := os.ReadDir(userStore().secretsDir()); len(entries) != 1 || entries[0].Name() != "kept" {
+	if entries, _ := os.ReadDir(rootStore().secretsDir()); len(entries) != 1 || entries[0].Name() != "kept" {
 		t.Fatalf("only add may write to disk, got %v", entries)
 	}
 	seal(t)
@@ -706,7 +706,7 @@ func TestFailedRemoveKeepsTheSecret(t *testing.T) {
 	if err := add(t, "kept", "value"); err != nil {
 		t.Fatal(err)
 	}
-	dir := userStore().secretsDir()
+	dir := rootStore().secretsDir()
 	os.Chmod(dir, 0o500)
 	defer os.Chmod(dir, 0o700)
 	if err := remove(t, "kept"); err == nil {
@@ -738,21 +738,24 @@ func TestSilentServiceIsSaidPlainly(t *testing.T) {
 	}
 }
 
-func TestUserSpaceHoldsOnlySoManyNames(t *testing.T) {
-	service(t)
-	if err := unseal(t, "init", "pass"); err != nil {
+func TestUserSpaceStaysInMemory(t *testing.T) {
+	userService(t)
+	for _, command := range []string{"add", "init", "unseal"} {
+		args := []string{"--user", command}
+		if command == "add" {
+			args = append(args, "x")
+		}
+		if _, err := request(args, []byte("v")); err == nil || !strings.Contains(err.Error(), "use adde") {
+			t.Fatalf("%s: got %v", command, err)
+		}
+	}
+	if _, err := request([]string{"--user", "adde", "x"}, []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	for i := range userPages {
-		if err := add(t, fmt.Sprintf("n%d", i), "v"); err != nil {
-			t.Fatal(err)
-		}
-		if i == userPages/2 {
-			seal(t)
-		}
+	if got, err := request([]string{"--user", "list"}, nil); err != nil || string(got) != "x memory\n" {
+		t.Fatalf("got %q, %v", got, err)
 	}
-	seal(t)
-	if err := add(t, "one-more", "v"); err == nil || !strings.Contains(err.Error(), "as much as it may") {
-		t.Fatalf("names on disk count too, got %v", err)
+	if entries, _ := os.ReadDir(base); len(entries) != 1 {
+		t.Fatalf("a user's space must write nothing, got %v", entries)
 	}
 }
