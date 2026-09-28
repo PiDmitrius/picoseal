@@ -1,21 +1,21 @@
 # picoseal
 
 Secrets kept in the locked memory of one service for scripts you pin in
-sudoers, delivered in CryptoBoxes that only the host using them can open.
+sudoers, delivered in cryptoboxes that only the host using them can open.
 
-A secret is a value under a name. A CryptoBox is a secret locked for one key, as
+A secret is a value under a name. A cryptobox is a secret locked for one key, as
 one line of base64url. `picoseal serve` runs as root and holds every secret; the
 other commands talk to it. It keeps a space for root and one for each user who
 passes `--user`, and it learns who is asking from the kernel, not from the
 caller. Each space has a session key that lives until the service stops;
-`pubkey` prints its public half, `export` puts a secret in a CryptoBox for it
-and `import` opens that CryptoBox.
+`pubkey` prints its public half, `export` puts a secret in a cryptobox for it
+and `import` opens that cryptobox.
 
 Secrets stay in the service's memory, in pages locked against swap and left out
 of core dumps, until the service stops. `add` keeps a secret there only; `save`
-also keeps it on disk, in root's store with a password, as a CryptoBox for a key
+also keeps it on disk, in root's store with a password, as a cryptobox for a key
 derived from that password. `seal` drops the stored secrets from memory and
-forgets how to open them, and `unseal` brings them back; CryptoBoxes sent to
+forgets how to open them, and `unseal` brings them back; cryptoboxes sent to
 `pubkey` still open after `seal`.
 
 ## Commands
@@ -31,13 +31,13 @@ forgets how to open them, and `unseal` brings them back; CryptoBoxes sent to
     picoseal list             List names and their state
     picoseal remove <name>    Delete a secret from memory and disk
     picoseal pubkey           Print the session public key
-    picoseal export <pubkey>  Put stdin in a CryptoBox for <pubkey> and print it
-    picoseal import           Open the CryptoBox on stdin and print the secret
+    picoseal export <pubkey>  Put stdin in a cryptobox for <pubkey> and print it
+    picoseal import           Open the cryptobox on stdin and print the secret
     picoseal --user ...       Use the caller's own space, in memory only, instead of root's
 
 `add`, `save`, `export`, `import`, `init` and `unseal` read one unechoed line
 from a terminal, under 4095 bytes, or a whole pipe, up to 65536 bytes of secret
-counting the one trailing newline they strip; a piped CryptoBox may wrap or end
+counting the one trailing newline they strip; a piped cryptobox may wrap or end
 in CRLF.
 `add` and `save` refuse to replace an existing name: rotate with `remove` then
 the same command again. `list` marks with `+` what opens now and with `-` what
@@ -48,7 +48,7 @@ waits for `unseal`:
     + temp    (memory)
 
 `add`, `save` and `open` keep secrets; `export` and `import` make and open
-CryptoBoxes without keeping anything.
+cryptoboxes without keeping anything.
 
 Every command but `export` works as root, in root's space, and refuses any other
 user. `--user` works as the calling user, in that user's own space, which lives
@@ -102,13 +102,13 @@ piped to hold working copies in ordinary memory while they run.
 
 `picoseal-export.html` does what `export` does in a browser, offline and
 self-contained: paste the public key and the secret and press Export and copy,
-which puts the CryptoBox in the clipboard in place of the secret. Open it as a
+which puts the cryptobox in the clipboard in place of the secret. Open it as a
 local file or from a server you trust over https; a page served over plain http
 from elsewhere can be rewritten on the way.
 
 The session key changes every time the service starts, so take a fresh `pubkey`
 over a channel that authenticates the host, such as ssh; a key swapped on the
-way hands the secret to whoever swapped it. A CryptoBox opens only in the space
+way hands the secret to whoever swapped it. A cryptobox opens only in the space
 and the run of the service it was made for.
 
 ## A store on disk
@@ -128,18 +128,18 @@ again.
 
 ## Nesting
 
-A CryptoBox can go in another CryptoBox: make it for the inner session first,
+A cryptobox can go in another cryptobox: make it for the inner session first,
 then for the outer one, and each host opens its own layer:
 
     picoseal export <inner-pubkey> < token | picoseal export <outer-pubkey> > outer.box
     sudo picoseal import < outer.box > inner.box                   # outer host
     sudo picoseal import < inner.box | sudo picoseal add gitlab    # inner host
 
-Each layer grows the CryptoBox by about a third, and `export` takes at most
+Each layer grows the cryptobox by about a third, and `export` takes at most
 65536 bytes.
 
-A CryptoBox carries no sender identity: anyone with the public key can make
-one, so accept CryptoBoxes only over a channel you trust.
+A cryptobox carries no sender identity: anyone with the public key can make
+one, so accept cryptoboxes only over a channel you trust.
 
 ## Letting other users use a secret
 
@@ -167,9 +167,9 @@ script and every directory above it root-owned and not writable by the caller.
 ## Agents
 
 An agent that operates a host gets a secret the same way and never needs to
-see it: the owner turns the secret into a CryptoBox in `picoseal-export.html`
+see it: the owner turns the secret into a cryptobox in `picoseal-export.html`
 and posts it in the chat, and the agent hands it to a script that keeps it.
-Only CryptoBoxes then reach the chat, the model and the tool output.
+Only cryptoboxes then reach the chat, the model and the tool output.
 
 That holds by setup, not by the agent's care, when the agent's user has no
 root, no `sudo` beyond the lines below and no `docker` group, and the owner
@@ -187,7 +187,7 @@ since picoseal works in another user's space only with `--user`;
 
 With a store, `save` in place of `add` keeps the secret on disk too. The agent
 posts `sudo picoseal pubkey`, then delivers with
-`printf '%s\n' '<CryptoBox>' | sudo /etc/picoseal/scripts/receive gitlab` and
+`printf '%s\n' '<cryptobox>' | sudo /etc/picoseal/scripts/receive gitlab` and
 checks with `sudo picoseal list`. `open` and a bare `import` print the secret:
 an agent that can run them sends it into its own output, so they go only into
 a pipe to the program that uses the secret. Scripts do not trace (`set -x`),

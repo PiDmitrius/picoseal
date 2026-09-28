@@ -48,7 +48,7 @@ const (
 	userPages = 256
 )
 
-var errNoSession = errors.New("no session key since the service started, take a fresh pubkey")
+var errNoSession = errors.New("no session key")
 
 type space struct {
 	pub     *[32]byte
@@ -92,7 +92,7 @@ func (sp *space) lock(value []byte) (*locked, error) {
 	pageSize := os.Getpagesize()
 	size := max((len(value)+pageSize-1)/pageSize, 1) * pageSize
 	if sp.users != nil && (sp.pages+size/pageSize > userPages || !sp.users.take(size/pageSize)) {
-		return nil, errors.New("this space holds as much as it may")
+		return nil, errors.New("the space is full")
 	}
 	pages, err := unix.Mmap(-1, 0, size, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
 	if err == nil {
@@ -204,7 +204,7 @@ func (st store) unsealKey() (salt, pub *[32]byte, err error) {
 		pub, ok = parseKey(fields[1])
 	}
 	if !ok {
-		return nil, nil, fmt.Errorf("not a picoseal unseal file %q", st.unsealPath())
+		return nil, nil, fmt.Errorf("not an unseal file %q", st.unsealPath())
 	}
 	return salt, pub, nil
 }
@@ -404,7 +404,7 @@ func parse(args []string) (user bool, command, name string, err error) {
 	}
 	command, args = args[0], args[1:]
 	if user && (command == "save" || command == "init" || command == "unseal" || command == "seal") {
-		return false, "", "", errors.New("no store for a user, use add")
+		return false, "", "", errors.New("no store")
 	}
 	switch command {
 	case "add", "save", "open", "remove":
@@ -470,7 +470,7 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 		}
 		value, err := openBox(payload, sp.pub, (*[32]byte)(sp.priv.value()))
 		if errors.Is(err, errOther) {
-			err = errors.New("CryptoBox for another pubkey, from before the service restarted or for another space")
+			err = errors.New("cryptobox for another pubkey")
 		}
 		return value, err
 	case "add", "save":
@@ -510,7 +510,7 @@ func (sp *space) add(st *store, name string, value []byte, memoryOnly bool) erro
 			return err
 		}
 		if unsealPub == nil {
-			return errors.New("no store, run picoseal init or use add for memory only")
+			return errors.New("no store")
 		}
 	}
 	held, err := sp.lock(value)
@@ -605,9 +605,9 @@ func (sp *space) unseal(st *store, password []byte, init bool) error {
 	}
 	switch {
 	case init && unsealPub != nil:
-		return errors.New("the store is already set up")
+		return errors.New("the store already exists")
 	case !init && unsealPub == nil:
-		return errors.New("no store, run picoseal init")
+		return errors.New("no store")
 	case init:
 		if err := st.makeDirs(); err != nil {
 			return err
@@ -663,7 +663,7 @@ func (sp *space) unseal(st *store, password []byte, init bool) error {
 // its memory back to the system at once.
 var deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
 	if free := memoryFree(); free < argonMemory<<10+64<<20 {
-		return nil, nil, fmt.Errorf("the store password needs %d MiB of free memory, %d MiB is free", argonMemory>>10+64, free>>20)
+		return nil, nil, fmt.Errorf("needs %d MiB of free memory, %d MiB is free", argonMemory>>10+64, free>>20)
 	}
 	out := argon2.IDKey(password, salt[:], 3, argonMemory, 1, 32)
 	defer debug.FreeOSMemory()

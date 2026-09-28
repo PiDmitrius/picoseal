@@ -48,9 +48,9 @@ var (
 	asUser      bool
 	nameRe      = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 	errUsage    = errors.New("usage")
-	errRoot     = errors.New("this runs as root, use sudo")
-	errRootUser = errors.New("root has no --user, drop it")
-	errOther    = errors.New("CryptoBox for another key")
+	errRoot     = errors.New("needs root")
+	errRootUser = errors.New("root has no --user")
+	errOther    = errors.New("cryptobox for another key")
 	errUnknown  = errors.New("unknown command")
 )
 
@@ -120,9 +120,9 @@ memory, and unseal reloads them.
                    those add keeps
   remove <name>    Delete a secret from memory and disk
   pubkey           Print the session public key
-  export <pubkey>  Put stdin, read the same way, in a CryptoBox for the session
+  export <pubkey>  Put stdin, read the same way, in a cryptobox for the session
                    with <pubkey> and print it
-  import           Open the CryptoBox on stdin, as export prints it, read the
+  import           Open the cryptobox on stdin, as export prints it, read the
                    same way, and print the secret
 
   --user           Use the caller's own space, in memory only, instead of
@@ -165,7 +165,7 @@ func makeBox(pub *[32]byte, value []byte) (string, error) {
 func openBox(data []byte, pub, priv *[32]byte) ([]byte, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
 	if err != nil || len(raw) <= box.AnonymousOverhead {
-		return nil, errors.New("not a CryptoBox")
+		return nil, errors.New("not a cryptobox")
 	}
 	value, ok := box.OpenAnonymous(nil, raw, pub, priv)
 	if !ok {
@@ -221,11 +221,11 @@ var reads = map[string]struct {
 	prompt string
 	limit  int
 }{
-	"add":    {"Secret", maxValue},
-	"save":   {"Secret", maxValue},
-	"import": {"CryptoBox", 2 * maxBox},
-	"init":   {"Password", maxValue},
-	"unseal": {"Password", maxValue},
+	"add":    {"secret", maxValue},
+	"save":   {"secret", maxValue},
+	"import": {"cryptobox", 2 * maxBox},
+	"init":   {"password", maxValue},
+	"unseal": {"password", maxValue},
 }
 
 // remote checks the arguments with the service's own parser before it reads
@@ -242,7 +242,7 @@ func remote(args []string, command string) error {
 		}
 	}
 	if command == "init" && isTerminal(os.Stdin) {
-		again, err := readSecret("Password again", maxValue)
+		again, err := readSecret("password again", maxValue)
 		if err != nil {
 			return err
 		}
@@ -265,7 +265,7 @@ func remote(args []string, command string) error {
 func request(args []string, payload []byte) ([]byte, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
-		return nil, errors.New("the service is not running, start picoseal serve")
+		return nil, errors.New("the service is not running")
 	}
 	defer conn.Close()
 	header := fmt.Sprintf("%d\x00", len(args))
@@ -285,7 +285,7 @@ func request(args []string, payload []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(reply) == 0 {
-		return nil, errors.New("the service stopped before it answered, secrets in memory are gone")
+		return nil, errors.New("the service stopped before it answered")
 	}
 	status, body, _ := bytes.Cut(reply, []byte("\n"))
 	if string(status) != "ok" {
@@ -302,7 +302,7 @@ func cmdExport(args []string) error {
 	if !ok {
 		return fmt.Errorf("not a pubkey %q", args[0])
 	}
-	value, err := readSecret("Secret", maxValue)
+	value, err := readSecret("secret", maxValue)
 	if err != nil {
 		return err
 	}
@@ -364,7 +364,7 @@ func readSecret(prompt string, limit int) ([]byte, error) {
 			return nil, err
 		}
 		if len(piped) > limit {
-			return nil, fmt.Errorf("%s exceeds %d bytes", noun(prompt), limit)
+			return nil, fmt.Errorf("%s exceeds %d bytes", prompt, limit)
 		}
 		return nonEmpty(prompt, strings.TrimSuffix(string(piped), "\n"))
 	}
@@ -393,22 +393,14 @@ func readSecret(prompt string, limit int) ([]byte, error) {
 	}
 	line = strings.TrimRight(line, "\r\n")
 	if len(line) >= maxTerminal {
-		return nil, fmt.Errorf("a terminal line of %d bytes or more may be cut, pipe it instead", maxTerminal)
+		return nil, fmt.Errorf("a terminal line takes under %d bytes, pipe it", maxTerminal)
 	}
 	return nonEmpty(prompt, line)
 }
 
-// noun is a prompt as it reads inside a sentence.
-func noun(prompt string) string {
-	if prompt == "CryptoBox" {
-		return prompt
-	}
-	return strings.ToLower(prompt)
-}
-
 func nonEmpty(prompt, value string) ([]byte, error) {
 	if value == "" {
-		return nil, errors.New("empty " + noun(prompt))
+		return nil, errors.New("empty " + prompt)
 	}
 	return []byte(value), nil
 }

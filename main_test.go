@@ -168,8 +168,8 @@ func unseal(t *testing.T, command, password string) error {
 func TestMemoryRoundTrip(t *testing.T) {
 	service(t)
 	const secret = "line1\nline2 $with `chars`"
-	if err := save(t, "brave", secret); err == nil || !strings.Contains(err.Error(), "add for memory only") {
-		t.Fatalf("save without a store must point to init and add, got %v", err)
+	if err := save(t, "brave", secret); err == nil || err.Error() != "no store" {
+		t.Fatalf("save without a store must say so, got %v", err)
 	}
 	if err := add(t, "brave", secret+"\n"); err != nil {
 		t.Fatal(err)
@@ -245,8 +245,8 @@ func TestSealDropsOnlyStoredSecrets(t *testing.T) {
 
 func TestStoreReloadsOnUnseal(t *testing.T) {
 	service(t)
-	if err := unseal(t, "unseal", "pass"); err == nil || !strings.Contains(err.Error(), "init") {
-		t.Fatalf("unseal without a store must point to init, got %v", err)
+	if err := unseal(t, "unseal", "pass"); err == nil || err.Error() != "no store" {
+		t.Fatalf("unseal without a store must say so, got %v", err)
 	}
 	if err := unseal(t, "init", "pass\n"); err != nil {
 		t.Fatal(err)
@@ -254,7 +254,7 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if salt, pub, err := rootStore().unsealKey(); err != nil || salt == nil || pub == nil {
 		t.Fatalf("init must write the salt and U, got %v", err)
 	}
-	if err := unseal(t, "init", "other"); err == nil || !strings.Contains(err.Error(), "already set up") {
+	if err := unseal(t, "init", "other"); err == nil || !strings.Contains(err.Error(), "the store already exists") {
 		t.Fatalf("init must refuse an existing store, got %v", err)
 	}
 	if err := save(t, "brave", "secret"); err != nil {
@@ -398,8 +398,8 @@ func TestImportRefusesJunkAndOtherKeys(t *testing.T) {
 	}
 	service(t)
 	pubkey(t)
-	if _, err := importBox(t, cryptobox); err == nil || !strings.Contains(err.Error(), "before the service restarted") {
-		t.Fatalf("a cryptobox for another key must be refused with the likely reason, got %v", err)
+	if _, err := importBox(t, cryptobox); err == nil || err.Error() != "cryptobox for another pubkey" {
+		t.Fatalf("a cryptobox for another key must be refused, got %v", err)
 	}
 }
 
@@ -607,7 +607,7 @@ func TestMalformedUnsealFileIsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, command := range []string{"init", "unseal"} {
-		if err := unseal(t, command, "pass"); err == nil || !strings.Contains(err.Error(), "not a picoseal unseal file") {
+		if err := unseal(t, command, "pass"); err == nil || !strings.Contains(err.Error(), "not an unseal file") {
 			t.Fatalf("%s: got %v", command, err)
 		}
 	}
@@ -754,7 +754,7 @@ func TestUserSpaceStaysInMemory(t *testing.T) {
 		if command == "save" {
 			args = append(args, "x")
 		}
-		if _, err := request(args, []byte("v")); err == nil || !strings.Contains(err.Error(), "use add") {
+		if _, err := request(args, []byte("v")); err == nil || err.Error() != "no store" {
 			t.Fatalf("%s: got %v", command, err)
 		}
 	}
