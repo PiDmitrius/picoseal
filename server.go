@@ -230,7 +230,7 @@ func cmdServe(args []string) error {
 	}
 	if conn, err := net.Dial("unix", sockPath); err == nil {
 		conn.Close()
-		return errors.New("picoseal serve is already running")
+		return errors.New("the service is already running")
 	}
 	os.Remove(sockPath)
 	listener, err := net.Listen("unix", sockPath)
@@ -419,6 +419,8 @@ func parse(args []string) (user bool, command, name string, err error) {
 		if len(args) == 0 {
 			return user, command, "", nil
 		}
+	default:
+		return false, "", "", errUnknown
 	}
 	return false, "", "", errUsage
 }
@@ -427,7 +429,7 @@ func parse(args []string) (user bool, command, name string, err error) {
 func (s *server) do(uid int, user bool, command, name string, payload []byte) ([]byte, error) {
 	switch {
 	case user && uid == s.root:
-		return nil, errors.New("--user is for a user other than root")
+		return nil, errRootUser
 	case !user && uid != s.root:
 		return nil, errRoot
 	}
@@ -466,7 +468,7 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 		if sp.priv == nil {
 			return nil, errNoSession
 		}
-		value, err := openBox(payload, "stdin", sp.pub, (*[32]byte)(sp.priv.value()))
+		value, err := openBox(payload, "", sp.pub, (*[32]byte)(sp.priv.value()))
 		if errors.Is(err, errOther) {
 			err = fmt.Errorf("%w: it was made for another pubkey, one from before the service restarted or from another space", err)
 		}
@@ -478,7 +480,7 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 			return bytes.Clone(value.value()), nil
 		}
 		if st.holds(name) {
-			return nil, fmt.Errorf("%s is sealed: run picoseal unseal", name)
+			return nil, fmt.Errorf("%s: sealed, run picoseal unseal", name)
 		}
 		return nil, fmt.Errorf("%s: no such secret", name)
 	case "list":
@@ -499,7 +501,7 @@ func (sp *space) add(st *store, name string, value []byte, memoryOnly bool) erro
 		return errors.New("empty secret")
 	}
 	if _, ok := sp.secrets[name]; ok || st.holds(name) {
-		return fmt.Errorf("%s already exists", name)
+		return fmt.Errorf("%s: already exists", name)
 	}
 	var unsealPub *[32]byte
 	if !memoryOnly {
@@ -603,7 +605,7 @@ func (sp *space) unseal(st *store, password []byte, init bool) error {
 	}
 	switch {
 	case init && unsealPub != nil:
-		return errors.New("the store exists")
+		return errors.New("the store is already set up")
 	case !init && unsealPub == nil:
 		return errors.New("no store: run picoseal init")
 	case init:

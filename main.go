@@ -43,13 +43,15 @@ const (
 )
 
 var (
-	base     = "/etc/picoseal"
-	sockPath = "/run/picoseal.sock"
-	asUser   bool
-	nameRe   = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
-	errUsage = errors.New("usage")
-	errRoot  = errors.New("this runs as root: use sudo")
-	errOther = errors.New("not a cryptobox for this key")
+	base        = "/etc/picoseal"
+	sockPath    = "/run/picoseal.sock"
+	asUser      bool
+	nameRe      = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
+	errUsage    = errors.New("usage")
+	errRoot     = errors.New("this runs as root: use sudo")
+	errRootUser = errors.New("root has no --user: drop it")
+	errOther    = errors.New("not a cryptobox for this key")
+	errUnknown  = errors.New("unknown command")
 )
 
 func main() {
@@ -80,6 +82,10 @@ func main() {
 	} else {
 		err = remote(args, args[flags])
 	}
+	if err != nil && err.Error() == errUnknown.Error() {
+		fmt.Fprintf(os.Stderr, "picoseal: unknown command %s\n\n", args[flags])
+		err = errUsage
+	}
 	if err != nil && err.Error() == errUsage.Error() {
 		usage()
 		os.Exit(1)
@@ -104,8 +110,8 @@ memory, and unseal reloads them.
                    memory
   seal             Drop from memory the secrets the store keeps
   add <name>       Keep stdin as <name> in memory only: one unechoed line from
-                   a terminal, under %d bytes, or a whole pipe, up to %d bytes
-                   counting the one trailing newline it strips
+                   a terminal, under %d bytes, or a whole pipe, up to %d
+                   bytes counting the one trailing newline it strips
   save <name>      Keep stdin, read the same way, as <name> in memory and in
                    the store init set up
   open <name>      Print the secret
@@ -156,21 +162,28 @@ func makeBox(pub *[32]byte, value []byte) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw) + "\n", nil
 }
 
+// openBox opens a cryptobox; source, when given, names it in errors.
 func openBox(data []byte, source string, pub, priv *[32]byte) ([]byte, error) {
+	fail := func(err error) ([]byte, error) {
+		if source != "" {
+			err = fmt.Errorf("%s: %w", source, err)
+		}
+		return nil, err
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
 	if err != nil || len(raw) <= box.AnonymousOverhead {
-		return nil, fmt.Errorf("%s: not a picoseal cryptobox", source)
+		return fail(errors.New("not a picoseal cryptobox"))
 	}
 	value, ok := box.OpenAnonymous(nil, raw, pub, priv)
 	if !ok {
-		return nil, fmt.Errorf("%s: %w", source, errOther)
+		return fail(errOther)
 	}
 	return value, nil
 }
 
 func asRoot() error {
 	if asUser {
-		return errors.New("--user is for a user other than root")
+		return errRootUser
 	}
 	if os.Geteuid() != 0 {
 		return errRoot
@@ -207,7 +220,6 @@ func cmdInstall(args []string) error {
 	if err := os.Rename(staged, binPath); err != nil {
 		return err
 	}
-	fmt.Printf("installed %s\n", binPath)
 	return nil
 }
 
@@ -236,7 +248,7 @@ func remote(args []string, command string) error {
 			return err
 		}
 	}
-	if command == "init" && isTerminal() {
+	if command == "init" && isTerminal(os.Stdin) {
 		again, err := readSecret("Password again", maxValue)
 		if err != nil {
 			return err
@@ -249,7 +261,9 @@ func remote(args []string, command string) error {
 	if err != nil {
 		return err
 	}
-	_, err = os.Stdout.Write(body)
+	if _, err = os.Stdout.Write(body); err == nil && (command == "open" || command == "import") && isTerminal(os.Stdout) {
+		_, err = fmt.Println()
+	}
 	return err
 }
 
@@ -258,7 +272,7 @@ func remote(args []string, command string) error {
 func request(args []string, payload []byte) ([]byte, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
-		return nil, errors.New("picoseal serve is not running")
+		return nil, errors.New("the service is not running: start picoseal serve")
 	}
 	defer conn.Close()
 	header := fmt.Sprintf("%d\x00", len(args))
@@ -307,8 +321,8 @@ func cmdExport(args []string) error {
 	return err
 }
 
-func isTerminal() bool {
-	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS)
+func isTerminal(f *os.File) bool {
+	_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
 	return err == nil
 }
 

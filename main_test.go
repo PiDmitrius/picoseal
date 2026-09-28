@@ -254,7 +254,7 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if salt, pub, err := rootStore().unsealKey(); err != nil || salt == nil || pub == nil {
 		t.Fatalf("init must write the salt and U, got %v", err)
 	}
-	if err := unseal(t, "init", "other"); err == nil || !strings.Contains(err.Error(), "exists") {
+	if err := unseal(t, "init", "other"); err == nil || !strings.Contains(err.Error(), "already set up") {
 		t.Fatalf("init must refuse an existing store, got %v", err)
 	}
 	if err := save(t, "brave", "secret"); err != nil {
