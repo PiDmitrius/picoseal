@@ -584,3 +584,38 @@ func TestMalformedUnsealFileIsKept(t *testing.T) {
 		t.Fatal("a malformed unseal file must stay as it is")
 	}
 }
+
+func TestAddeStaysInMemory(t *testing.T) {
+	service(t)
+	if _, err := run(t, "early", "adde", "early"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unseal(t, "init", "pass"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, "late", "adde", "late"); err != nil {
+		t.Fatal(err)
+	}
+	if err := add(t, "kept", "value"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, "other", "adde", "kept"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("adde must refuse an existing name, got %v", err)
+	}
+	if got := list(t); got != "early memory\nkept\nlate memory\n" {
+		t.Fatalf("list: %q", got)
+	}
+	if got, err := open(t, "late"); err != nil || got != "late" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if err := unseal(t, "unseal", "pass"); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(userStore().secretsDir()); len(entries) != 1 || entries[0].Name() != "kept" {
+		t.Fatalf("only add may write to disk, got %v", entries)
+	}
+	seal(t)
+	if got := list(t); got != "kept sealed\n" {
+		t.Fatalf("list: %q", got)
+	}
+}

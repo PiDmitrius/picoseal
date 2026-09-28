@@ -92,8 +92,9 @@ func usersBudget() *budget {
 // locked holds a value in its own anonymous pages, locked against swap and
 // left out of core dumps.
 type locked struct {
-	pages []byte
-	n     int
+	pages      []byte
+	n          int
+	memoryOnly bool
 }
 
 func (sp *space) lock(value []byte) (*locked, error) {
@@ -118,7 +119,7 @@ func (sp *space) lock(value []byte) (*locked, error) {
 	unix.Madvise(pages, unix.MADV_DONTDUMP)
 	copy(pages, value)
 	sp.pages += size / pageSize
-	return &locked{pages, len(value)}, nil
+	return &locked{pages: pages, n: len(value)}, nil
 }
 
 func (l *locked) value() []byte { return l.pages[:l.n] }
@@ -395,7 +396,7 @@ func parse(args []string) (user bool, command, name string, err error) {
 	}
 	command, args = args[0], args[1:]
 	switch command {
-	case "add", "open", "remove":
+	case "add", "adde", "open", "remove":
 		if len(args) != 1 {
 			return false, "", "", errUsage
 		}
@@ -457,8 +458,8 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 			return nil, errNoSession
 		}
 		return openBox(payload, "stdin", sp.pub, (*[32]byte)(sp.priv.value()))
-	case "add":
-		return nil, sp.add(st, name, payload)
+	case "add", "adde":
+		return nil, sp.add(st, name, payload, command == "adde")
 	case "open":
 		if value, ok := sp.secrets[name]; ok {
 			return bytes.Clone(value.value()), nil
@@ -480,7 +481,7 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 	return nil, errUsage
 }
 
-func (sp *space) add(st store, name string, value []byte) error {
+func (sp *space) add(st store, name string, value []byte, memoryOnly bool) error {
 	if len(value) == 0 {
 		return errors.New("empty secret")
 	}
@@ -498,7 +499,8 @@ func (sp *space) add(st store, name string, value []byte) error {
 	if err != nil {
 		return err
 	}
-	if unsealPub != nil {
+	held.memoryOnly = memoryOnly
+	if unsealPub != nil && !memoryOnly {
 		cryptobox, err := makeBox(unsealPub, value)
 		if err == nil {
 			err = writeNew(st.secretPath(name), cryptobox)
@@ -514,7 +516,10 @@ func (sp *space) add(st store, name string, value []byte) error {
 
 func (sp *space) list(st store) ([]byte, error) {
 	lines := []string{}
-	for name := range sp.secrets {
+	for name, value := range sp.secrets {
+		if value.memoryOnly {
+			name += " memory"
+		}
 		lines = append(lines, name)
 	}
 	entries, err := os.ReadDir(st.secretsDir())
@@ -561,7 +566,7 @@ func (sp *space) seal() {
 
 // unseal checks the password against the store's public U, or on init sets
 // it, loads every cryptobox on disk that is not in memory yet and stores on
-// disk every secret that is only in memory.
+// disk every secret add kept only in memory.
 func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex) error {
 	if len(password) == 0 {
 		return errors.New("empty password")
@@ -624,7 +629,7 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 		}
 	}
 	for name, value := range sp.secrets {
-		if _, err := os.Lstat(st.secretPath(name)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(st.secretPath(name)); value.memoryOnly || !errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		cryptobox, err := makeBox(pub, value.value())

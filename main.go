@@ -97,19 +97,21 @@ One service, picoseal serve, keeps every secret in its locked memory until it
 stops or seal. A store with a password also keeps them on disk and reloads
 them on unseal.
 
-  install          Create %s and copy the binary to %s
+  install          Copy the binary to %s
   serve            Run the service that holds the secrets
   init             Set the store password, asked twice on a terminal, and store
-                   on disk the secrets in memory
+                   on disk the secrets add kept
   unseal           Ask the store password, load the secrets on disk into memory
-                   and store on disk those only in memory
+                   and store on disk those add kept only in memory
   seal             Drop every secret from memory
   add <name>       Keep stdin as <name>, on disk too if the store is set up:
                    one unechoed line from a terminal, under %d bytes, or
                    a whole pipe, up to %d bytes counting the one trailing
                    newline it strips
+  adde <name>      Keep stdin as <name> in memory only, never on disk
   open <name>      Print the secret
-  list             List names; "sealed" marks those on disk only
+  list             List names; "sealed" marks those on disk only, "memory"
+                   those adde keeps
   remove <name>    Delete a secret from memory and disk
   pubkey           Print the session public key
   export <pubkey>  Put stdin, read the same way, in a cryptobox for the session
@@ -121,7 +123,7 @@ them on unseal.
 
 Every command but export works as root, or with --user as the caller. Only root
 reaches root's secrets.
-`, base, binPath, maxTerminal, maxValue)
+`, binPath, maxTerminal, maxValue)
 }
 
 func checkName(name string) error {
@@ -182,20 +184,30 @@ func cmdInstall(args []string) error {
 	if err := asRoot(); err != nil {
 		return err
 	}
-	for dir, mode := range map[string]os.FileMode{
-		base:                           0o755,
-		filepath.Join(base, "secrets"): 0o700,
-		filepath.Join(base, "scripts"): 0o755,
-		filepath.Join(base, "users"):   0o700,
-	} {
-		if err := os.MkdirAll(dir, mode); err != nil {
-			return err
-		}
-		if err := os.Chmod(dir, mode); err != nil {
-			return err
-		}
+	self, err := os.Executable()
+	if err != nil || self == binPath {
+		return err
 	}
-	return installBinary()
+	data, err := os.ReadFile(self)
+	if err != nil {
+		return err
+	}
+	mode := os.FileMode(0o755)
+	if installed, err := os.Stat(binPath); err == nil {
+		mode = installed.Mode().Perm()
+	}
+	staged := binPath + ".new"
+	if err := os.WriteFile(staged, data, mode); err != nil {
+		return fmt.Errorf("%s not installed: %w", binPath, err)
+	}
+	if err := os.Chmod(staged, mode); err != nil {
+		return err
+	}
+	if err := os.Rename(staged, binPath); err != nil {
+		return err
+	}
+	fmt.Printf("installed %s\n", binPath)
+	return nil
 }
 
 // reads says what a command takes from stdin before it asks the service.
@@ -204,6 +216,7 @@ var reads = map[string]struct {
 	limit  int
 }{
 	"add":    {"Secret", maxValue},
+	"adde":   {"Secret", maxValue},
 	"import": {"Cryptobox", 2 * maxBox},
 	"init":   {"Password", maxValue},
 	"unseal": {"Password", maxValue},
@@ -326,33 +339,6 @@ func fsyncDir(path string) error {
 	}
 	defer d.Close()
 	return d.Sync()
-}
-
-func installBinary() error {
-	self, err := os.Executable()
-	if err != nil || self == binPath {
-		return err
-	}
-	data, err := os.ReadFile(self)
-	if err != nil {
-		return err
-	}
-	mode := os.FileMode(0o755)
-	if installed, err := os.Stat(binPath); err == nil {
-		mode = installed.Mode().Perm()
-	}
-	staged := binPath + ".new"
-	if err := os.WriteFile(staged, data, mode); err != nil {
-		return fmt.Errorf("%s not installed: %w", binPath, err)
-	}
-	if err := os.Chmod(staged, mode); err != nil {
-		return err
-	}
-	if err := os.Rename(staged, binPath); err != nil {
-		return err
-	}
-	fmt.Printf("installed %s\n", binPath)
-	return nil
 }
 
 // readSecret takes a value off a pipe as it is, and off a terminal without
