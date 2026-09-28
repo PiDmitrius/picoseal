@@ -274,6 +274,9 @@ func request(args []string, payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(reply) == 0 {
+		return nil, errors.New("picoseal serve stopped before it answered: secrets in memory are gone")
+	}
 	status, body, _ := bytes.Cut(reply, []byte("\n"))
 	if string(status) != "ok" {
 		return nil, errors.New(strings.TrimPrefix(string(status), "error "))

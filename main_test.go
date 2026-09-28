@@ -21,6 +21,9 @@ import (
 // commands at it as --user callers.
 func service(t *testing.T) string {
 	t.Helper()
+	if os.Getuid() == 0 {
+		t.Skip("the service tests run as a user: root refuses --user")
+	}
 	previousBase, previousSock, previousUser := base, sockPath, asUser
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o755); err != nil {
@@ -597,6 +600,9 @@ func TestMalformedUnsealFileIsKept(t *testing.T) {
 	if data, _ := os.ReadFile(st.unsealPath()); string(data) != bad {
 		t.Fatal("a malformed unseal file must stay as it is")
 	}
+	if err := adde(t, "temp", "value"); err != nil {
+		t.Fatalf("adde needs no store, got %v", err)
+	}
 }
 
 func TestAddeStaysInMemory(t *testing.T) {
@@ -634,19 +640,25 @@ func TestAddeStaysInMemory(t *testing.T) {
 	}
 }
 
-func TestMemoryLimitTakesTheTightestCgroup(t *testing.T) {
+func TestCgroupFreeTakesTheTightestLevel(t *testing.T) {
 	root := t.TempDir()
 	leaf := filepath.Join(root, "system.slice", "picoseal.service")
 	if err := os.MkdirAll(leaf, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(leaf, "memory.max"), []byte("max\n"), 0o644)
-	if got := memoryLimit(root, "/system.slice/picoseal.service"); got != math.MaxUint64 {
+	if got := cgroupFree(root, "/system.slice/picoseal.service"); got != math.MaxUint64 {
 		t.Fatalf("no limit, got %d", got)
 	}
-	os.WriteFile(filepath.Join(root, "system.slice", "memory.max"), []byte("134217728\n"), 0o644)
-	if got := memoryLimit(root, "/system.slice/picoseal.service"); got != 134217728 {
-		t.Fatalf("the slice's limit binds, got %d", got)
+	slice := filepath.Join(root, "system.slice")
+	os.WriteFile(filepath.Join(slice, "memory.max"), []byte("1000\n"), 0o644)
+	os.WriteFile(filepath.Join(slice, "memory.current"), []byte("300\n"), 0o644)
+	if got := cgroupFree(root, "/system.slice/picoseal.service"); got != 700 {
+		t.Fatalf("the slice's room binds, got %d", got)
+	}
+	os.WriteFile(filepath.Join(slice, "memory.current"), []byte("1200\n"), 0o644)
+	if got := cgroupFree(root, "/system.slice/picoseal.service"); got != 0 {
+		t.Fatalf("an overfull slice leaves nothing, got %d", got)
 	}
 }
 
@@ -674,5 +686,45 @@ func TestStoreNeedsNoDirectoryUntilInit(t *testing.T) {
 	}
 	if got := list(t); got != "kept\n" {
 		t.Fatalf("list: %q", got)
+	}
+}
+
+func TestFailedRemoveKeepsTheSecret(t *testing.T) {
+	service(t)
+	if err := unseal(t, "init", "pass"); err != nil {
+		t.Fatal(err)
+	}
+	if err := add(t, "kept", "value"); err != nil {
+		t.Fatal(err)
+	}
+	dir := userStore().secretsDir()
+	os.Chmod(dir, 0o500)
+	defer os.Chmod(dir, 0o700)
+	if err := remove(t, "kept"); err == nil {
+		t.Fatal("remove must fail when the store refuses")
+	}
+	if got, err := open(t, "kept"); err != nil || got != "value" {
+		t.Fatalf("a failed remove must keep the secret, got %q, %v", got, err)
+	}
+}
+
+func TestSilentServiceIsSaidPlainly(t *testing.T) {
+	previous := sockPath
+	sockPath = filepath.Join(t.TempDir(), "sock")
+	defer func() { sockPath = previous }()
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			io.Copy(io.Discard, conn)
+			conn.Close()
+		}
+	}()
+	if _, err := request([]string{"list"}, nil); err == nil || !strings.Contains(err.Error(), "stopped before it answered") {
+		t.Fatalf("got %v", err)
 	}
 }

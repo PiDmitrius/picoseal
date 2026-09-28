@@ -52,10 +52,14 @@ secrets, and a user reaches their own only through the service.
 
 ## The service
 
-    sudo ./picoseal install
+Take the binary for your architecture from a release, or `go build` it, and
+install it:
 
-`install` copies the binary to `/usr/local/bin`; running it again keeps the
-binary's mode. Run the service under systemd:
+    chmod +x picoseal-<version>-linux-amd64
+    sudo ./picoseal-<version>-linux-amd64 install
+
+`install` copies the binary to `/usr/local/bin/picoseal`; running it again
+keeps the binary's mode. Run the service under systemd:
 
     # /etc/systemd/system/picoseal.service
     [Service]
@@ -67,9 +71,16 @@ binary's mode. Run the service under systemd:
 
     sudo systemctl enable --now picoseal
 
-In a container, start `picoseal serve &` before anything that needs a secret.
+In a container, start the service and wait for its socket before anything that
+needs a secret:
+
+    picoseal serve &
+    until [ -S /run/picoseal.sock ]; do sleep 0.1; done
+
 Every other command says so plainly when the service is not running. Stopping
-or restarting it drops every secret in memory and every session key.
+or restarting it drops every secret in memory and every session key: after an
+update, which is `install` and a restart, `unseal` again and deliver again what
+`adde` kept.
 
 ## Memory only
 
@@ -106,7 +117,8 @@ fails. After the service restarts or `seal`, one `unseal` loads the stored
 secrets again. Of the password the store keeps only its salt and a public key
 Argon2id derives from them, so a copy of the disk opens nothing without it.
 `init` and `unseal` need about 1 GiB of memory for a moment, and so does every
-guess at the password.
+guess at the password. A forgotten password cannot be recovered: remove `unseal`
+and `secrets/` from the store, `init` again and deliver the secrets again.
 
 ## Nesting
 
@@ -131,7 +143,7 @@ secret without printing it, and read the secret into its own variable so
 
     #!/bin/sh
     set -eu
-    GITLAB_TOKEN=$(picoseal open gitlab)
+    GITLAB_TOKEN=$(/usr/local/bin/picoseal open gitlab)
     printf 'header = "PRIVATE-TOKEN: %s"\n' "$GITLAB_TOKEN" |
         curl -sS --config - https://<gitlab>/api/v4/projects
 
@@ -163,7 +175,7 @@ since picoseal works in another user's space only with `--user`;
     #!/bin/sh
     # /etc/picoseal/scripts/receive <name>
     set -eu
-    picoseal import | picoseal adde "$1"
+    /usr/local/bin/picoseal import | /usr/local/bin/picoseal adde "$1"
 
     <agent> ALL=(root) NOPASSWD: /usr/local/bin/picoseal pubkey, /usr/local/bin/picoseal list, /etc/picoseal/scripts/receive *
 

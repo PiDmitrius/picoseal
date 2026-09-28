@@ -491,12 +491,15 @@ func (sp *space) add(st store, name string, value []byte, memoryOnly bool) error
 	if _, err := os.Lstat(st.secretPath(name)); err == nil {
 		return fmt.Errorf("%s already exists", name)
 	}
-	_, unsealPub, err := st.unsealKey()
-	if err != nil {
-		return err
-	}
-	if unsealPub == nil && !memoryOnly {
-		return errors.New("no store: run picoseal init, or adde for memory only")
+	var unsealPub *[32]byte
+	if !memoryOnly {
+		var err error
+		if _, unsealPub, err = st.unsealKey(); err != nil {
+			return err
+		}
+		if unsealPub == nil {
+			return errors.New("no store: run picoseal init, or adde for memory only")
+		}
 	}
 	held, err := sp.lock(value)
 	if err != nil {
@@ -542,18 +545,16 @@ func (sp *space) list(st store) ([]byte, error) {
 }
 
 func (sp *space) remove(st store, name string) error {
+	err := os.Remove(st.secretPath(name))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	value, found := sp.secrets[name]
 	if found {
 		sp.free(value)
 		delete(sp.secrets, name)
 	}
-	err := os.Remove(st.secretPath(name))
-	if err == nil {
-		found = true
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if !found {
+	if !found && err != nil {
 		return fmt.Errorf("%s: no such secret", name)
 	}
 	return nil
@@ -637,13 +638,8 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 // deriveU computes U from the salt and the password with Argon2id and gives
 // its memory back to the system at once.
 var deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
-	self, _ := os.ReadFile("/proc/self/cgroup")
-	for _, line := range strings.Split(string(self), "\n") {
-		if path, ok := strings.CutPrefix(line, "0::"); ok {
-			if max := memoryLimit("/sys/fs/cgroup", path); max < argonMemory<<10+64<<20 {
-				return nil, nil, fmt.Errorf("the store password needs %d MiB of memory, the cgroup allows %d MiB", argonMemory>>10+64, max>>20)
-			}
-		}
+	if free := memoryFree(); free < argonMemory<<10+64<<20 {
+		return nil, nil, fmt.Errorf("the store password needs %d MiB of free memory, %d MiB is free", argonMemory>>10+64, free>>20)
 	}
 	out := argon2.IDKey(password, salt[:], 3, argonMemory, 1, 32)
 	defer debug.FreeOSMemory()
@@ -653,16 +649,39 @@ var deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err er
 	return publicKey(priv), priv, nil
 }
 
-// memoryLimit is the smallest memory.max from the cgroup at path up to root.
-func memoryLimit(root, path string) uint64 {
-	limit := uint64(math.MaxUint64)
+// memoryFree is what the system and the service's cgroups have left.
+func memoryFree() uint64 {
+	free := uint64(math.MaxUint64)
+	info, _ := os.ReadFile("/proc/meminfo")
+	for _, line := range strings.Split(string(info), "\n") {
+		if kib, ok := strings.CutPrefix(line, "MemAvailable:"); ok {
+			if n, err := strconv.ParseUint(strings.TrimSpace(strings.TrimSuffix(kib, "kB")), 10, 64); err == nil {
+				free = n << 10
+			}
+		}
+	}
+	self, _ := os.ReadFile("/proc/self/cgroup")
+	for _, line := range strings.Split(string(self), "\n") {
+		if path, ok := strings.CutPrefix(line, "0::"); ok {
+			free = min(free, cgroupFree("/sys/fs/cgroup", path))
+		}
+	}
+	return free
+}
+
+// cgroupFree is the least room left under memory.max from the cgroup at path
+// up to root.
+func cgroupFree(root, path string) uint64 {
+	free := uint64(math.MaxUint64)
 	for dir := filepath.Join(root, path); ; dir = filepath.Dir(dir) {
-		data, _ := os.ReadFile(filepath.Join(dir, "memory.max"))
-		if max, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err == nil {
-			limit = min(limit, max)
+		limit, _ := os.ReadFile(filepath.Join(dir, "memory.max"))
+		if max, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64); err == nil {
+			used, _ := os.ReadFile(filepath.Join(dir, "memory.current"))
+			current, _ := strconv.ParseUint(strings.TrimSpace(string(used)), 10, 64)
+			free = min(free, max-min(max, current))
 		}
 		if dir == root || dir == filepath.Dir(dir) {
-			return limit
+			return free
 		}
 	}
 }
