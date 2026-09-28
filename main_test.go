@@ -656,7 +656,11 @@ func TestCgroupFreeTakesTheTightestLevel(t *testing.T) {
 	if got := cgroupFree(root, "/system.slice/picoseal.service"); got != 700 {
 		t.Fatalf("the slice's room binds, got %d", got)
 	}
-	os.WriteFile(filepath.Join(slice, "memory.current"), []byte("1200\n"), 0o644)
+	os.WriteFile(filepath.Join(slice, "memory.stat"), []byte("anon 100\ninactive_file 200\n"), 0o644)
+	if got := cgroupFree(root, "/system.slice/picoseal.service"); got != 900 {
+		t.Fatalf("inactive file cache is room, got %d", got)
+	}
+	os.WriteFile(filepath.Join(slice, "memory.current"), []byte("1400\n"), 0o644)
 	if got := cgroupFree(root, "/system.slice/picoseal.service"); got != 0 {
 		t.Fatalf("an overfull slice leaves nothing, got %d", got)
 	}

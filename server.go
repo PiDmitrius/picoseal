@@ -670,7 +670,7 @@ func memoryFree() uint64 {
 }
 
 // cgroupFree is the least room left under memory.max from the cgroup at path
-// up to root.
+// up to root, counting inactive file cache as room the kernel gives back.
 func cgroupFree(root, path string) uint64 {
 	free := uint64(math.MaxUint64)
 	for dir := filepath.Join(root, path); ; dir = filepath.Dir(dir) {
@@ -678,6 +678,13 @@ func cgroupFree(root, path string) uint64 {
 		if max, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64); err == nil {
 			used, _ := os.ReadFile(filepath.Join(dir, "memory.current"))
 			current, _ := strconv.ParseUint(strings.TrimSpace(string(used)), 10, 64)
+			stat, _ := os.ReadFile(filepath.Join(dir, "memory.stat"))
+			for _, line := range strings.Split(string(stat), "\n") {
+				if cache, ok := strings.CutPrefix(line, "inactive_file "); ok {
+					n, _ := strconv.ParseUint(cache, 10, 64)
+					current -= min(current, n)
+				}
+			}
 			free = min(free, max-min(max, current))
 		}
 		if dir == root || dir == filepath.Dir(dir) {

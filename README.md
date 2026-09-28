@@ -74,6 +74,7 @@ keeps the binary's mode. Run the service under systemd:
 In a container, start the service and wait for its socket before anything that
 needs a secret:
 
+    rm -f /run/picoseal.sock
     picoseal serve &
     until [ -S /run/picoseal.sock ]; do sleep 0.1; done
 
@@ -117,8 +118,9 @@ fails. After the service restarts or `seal`, one `unseal` loads the stored
 secrets again. Of the password the store keeps only its salt and a public key
 Argon2id derives from them, so a copy of the disk opens nothing without it.
 `init` and `unseal` need about 1 GiB of memory for a moment, and so does every
-guess at the password. A forgotten password cannot be recovered: remove `unseal`
-and `secrets/` from the store, `init` again and deliver the secrets again.
+guess at the password. A forgotten password cannot be recovered: `seal`, remove
+`unseal` and `secrets/` from the store, `init` again and deliver the secrets
+again.
 
 ## Nesting
 
