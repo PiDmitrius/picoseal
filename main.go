@@ -42,6 +42,9 @@ const (
 	binPath     = "/usr/local/bin/picoseal"
 )
 
+// version is the release tag, set when a release is built.
+var version = "dev"
+
 var (
 	base        = "/etc/picoseal"
 	sockPath    = "/run/picoseal.sock"
@@ -69,6 +72,7 @@ func main() {
 		"install": cmdInstall,
 		"serve":   cmdServe,
 		"export":  cmdExport,
+		"version": cmdVersion,
 	}[args[at]]; ok && at == 0 {
 		err = local(args[1:])
 	} else if ok {
@@ -91,7 +95,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `picoseal — secrets in locked memory for root scripts
+	fmt.Fprintf(os.Stderr, `picoseal %s — secrets in locked memory for root scripts
 
 One service, picoseal serve, keeps every secret in its locked memory until it
 stops. save also keeps them in a store with a password: seal drops those from
@@ -119,12 +123,14 @@ memory, and unseal reloads them.
   import           Open the cryptobox on stdin, as export prints it, read the
                    same way, and print the secret
 
+  version          Print the version
+
   --user           Use the caller's own space, in memory only, instead of
                    root's
 
-Every command but export needs root; --user takes the caller's own space
-instead, in memory only. Only root reaches root's secrets.
-`, binPath, maxTerminal, maxValue)
+Every command but export and version needs root; --user takes the caller's own
+space instead, in memory only. Only root reaches root's secrets.
+`, version, binPath, maxTerminal, maxValue)
 }
 
 func checkName(name string) error {
@@ -283,6 +289,14 @@ func request(args []string, payload []byte) ([]byte, error) {
 		return nil, errors.New(strings.TrimPrefix(string(status), "error "))
 	}
 	return body, nil
+}
+
+func cmdVersion(args []string) error {
+	if len(args) != 0 {
+		return errUsage
+	}
+	fmt.Println(version)
+	return nil
 }
 
 func cmdExport(args []string) error {

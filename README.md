@@ -33,6 +33,7 @@ forgets how to open them, and `unseal` brings them back; cryptoboxes sent to
     picoseal pubkey           Print the session public key
     picoseal export <pubkey>  Put stdin in a cryptobox for <pubkey> and print it
     picoseal import           Open the cryptobox on stdin and print the secret
+    picoseal version          Print the version
     picoseal --user ...       Use the caller's own space, in memory only, instead of root's
 
 `add`, `save`, `export`, `import`, `init` and `unseal` read one unechoed line
@@ -50,12 +51,12 @@ waits for `unseal`:
 `add` and `save` keep secrets and `open` prints them; `export` and `import` make
 and open cryptoboxes without keeping anything.
 
-Every command but `export` works as root, in root's space, and refuses any other
-user. `--user` works as the calling user, in that user's own space, which lives
-in memory only: `add` keeps a secret there, and `save`, `init`, `unseal` and
-`seal` are root's; root refuses `--user`. `export` needs neither the service nor
-root. Only root reaches root's secrets, and a user reaches their own only
-through the service.
+Every command but `export` and `version` works as root, in root's space, and
+refuses any other user. `--user` works as the calling user, in that user's own
+space, which lives in memory only: `add` keeps a secret there, and `save`,
+`init`, `unseal` and `seal` are root's; root refuses `--user`. `export` and
+`version` need neither the service nor root. Only root reaches root's secrets,
+and a user reaches their own only through the service.
 
 ## The service
 
