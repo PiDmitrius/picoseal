@@ -48,9 +48,9 @@ var (
 	asUser      bool
 	nameRe      = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 	errUsage    = errors.New("usage")
-	errRoot     = errors.New("this runs as root: use sudo")
-	errRootUser = errors.New("root has no --user: drop it")
-	errOther    = errors.New("not a cryptobox for this key")
+	errRoot     = errors.New("this runs as root, use sudo")
+	errRootUser = errors.New("root has no --user, drop it")
+	errOther    = errors.New("CryptoBox for another key")
 	errUnknown  = errors.New("unknown command")
 )
 
@@ -83,7 +83,7 @@ func main() {
 		err = remote(args, args[flags])
 	}
 	if err != nil && err.Error() == errUnknown.Error() {
-		fmt.Fprintf(os.Stderr, "picoseal: unknown command %s\n\n", args[flags])
+		fmt.Fprintf(os.Stderr, "picoseal: unknown command %q\n\n", args[flags])
 		err = errUsage
 	}
 	if err != nil && err.Error() == errUsage.Error() {
@@ -120,9 +120,9 @@ memory, and unseal reloads them.
                    those add keeps
   remove <name>    Delete a secret from memory and disk
   pubkey           Print the session public key
-  export <pubkey>  Put stdin, read the same way, in a cryptobox for the session
+  export <pubkey>  Put stdin, read the same way, in a CryptoBox for the session
                    with <pubkey> and print it
-  import           Open the cryptobox on stdin, as export prints it, read the
+  import           Open the CryptoBox on stdin, as export prints it, read the
                    same way, and print the secret
 
   --user           Use the caller's own space, in memory only, instead of
@@ -135,7 +135,7 @@ reaches root's secrets.
 
 func checkName(name string) error {
 	if !nameRe.MatchString(name) || name == "." || name == ".." {
-		return errors.New("name must match [a-z0-9._-]{1,64}")
+		return fmt.Errorf("name must match [a-z0-9._-]{1,64}, not %q", name)
 	}
 	return nil
 }
@@ -162,21 +162,14 @@ func makeBox(pub *[32]byte, value []byte) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw) + "\n", nil
 }
 
-// openBox opens a cryptobox; source, when given, names it in errors.
-func openBox(data []byte, source string, pub, priv *[32]byte) ([]byte, error) {
-	fail := func(err error) ([]byte, error) {
-		if source != "" {
-			err = fmt.Errorf("%s: %w", source, err)
-		}
-		return nil, err
-	}
+func openBox(data []byte, pub, priv *[32]byte) ([]byte, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
 	if err != nil || len(raw) <= box.AnonymousOverhead {
-		return fail(errors.New("not a picoseal cryptobox"))
+		return nil, errors.New("not a CryptoBox")
 	}
 	value, ok := box.OpenAnonymous(nil, raw, pub, priv)
 	if !ok {
-		return fail(errOther)
+		return nil, errOther
 	}
 	return value, nil
 }
@@ -212,7 +205,7 @@ func cmdInstall(args []string) error {
 	}
 	staged := binPath + ".new"
 	if err := os.WriteFile(staged, data, mode); err != nil {
-		return fmt.Errorf("%s not installed: %w", binPath, err)
+		return err
 	}
 	if err := os.Chmod(staged, mode); err != nil {
 		return err
@@ -230,7 +223,7 @@ var reads = map[string]struct {
 }{
 	"add":    {"Secret", maxValue},
 	"save":   {"Secret", maxValue},
-	"import": {"Cryptobox", 2 * maxBox},
+	"import": {"CryptoBox", 2 * maxBox},
 	"init":   {"Password", maxValue},
 	"unseal": {"Password", maxValue},
 }
@@ -272,7 +265,7 @@ func remote(args []string, command string) error {
 func request(args []string, payload []byte) ([]byte, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
-		return nil, errors.New("the service is not running: start picoseal serve")
+		return nil, errors.New("the service is not running, start picoseal serve")
 	}
 	defer conn.Close()
 	header := fmt.Sprintf("%d\x00", len(args))
@@ -292,7 +285,7 @@ func request(args []string, payload []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(reply) == 0 {
-		return nil, errors.New("picoseal serve stopped before it answered: secrets in memory are gone")
+		return nil, errors.New("the service stopped before it answered, secrets in memory are gone")
 	}
 	status, body, _ := bytes.Cut(reply, []byte("\n"))
 	if string(status) != "ok" {
@@ -307,7 +300,7 @@ func cmdExport(args []string) error {
 	}
 	pub, ok := parseKey(args[0])
 	if !ok {
-		return errors.New("not a picoseal public key")
+		return fmt.Errorf("not a pubkey %q", args[0])
 	}
 	value, err := readSecret("Secret", maxValue)
 	if err != nil {
@@ -371,7 +364,7 @@ func readSecret(prompt string, limit int) ([]byte, error) {
 			return nil, err
 		}
 		if len(piped) > limit {
-			return nil, fmt.Errorf("%s exceeds %d bytes", strings.ToLower(prompt), limit)
+			return nil, fmt.Errorf("%s exceeds %d bytes", noun(prompt), limit)
 		}
 		return nonEmpty(prompt, strings.TrimSuffix(string(piped), "\n"))
 	}
@@ -392,7 +385,7 @@ func readSecret(prompt string, limit int) ([]byte, error) {
 		os.Exit(1)
 	}()
 
-	fmt.Fprint(os.Stderr, prompt+": ")
+	fmt.Fprintf(os.Stderr, "picoseal input (%s): ", prompt)
 	line, err := bufio.NewReader(io.LimitReader(os.Stdin, maxTerminal+1)).ReadString('\n')
 	fmt.Fprintln(os.Stderr)
 	if err != nil && err != io.EOF {
@@ -400,14 +393,22 @@ func readSecret(prompt string, limit int) ([]byte, error) {
 	}
 	line = strings.TrimRight(line, "\r\n")
 	if len(line) >= maxTerminal {
-		return nil, fmt.Errorf("a terminal line of %d bytes or more may be cut; pipe it instead", maxTerminal)
+		return nil, fmt.Errorf("a terminal line of %d bytes or more may be cut, pipe it instead", maxTerminal)
 	}
 	return nonEmpty(prompt, line)
 }
 
+// noun is a prompt as it reads inside a sentence.
+func noun(prompt string) string {
+	if prompt == "CryptoBox" {
+		return prompt
+	}
+	return strings.ToLower(prompt)
+}
+
 func nonEmpty(prompt, value string) ([]byte, error) {
 	if value == "" {
-		return nil, errors.New("empty " + strings.ToLower(prompt))
+		return nil, errors.New("empty " + noun(prompt))
 	}
 	return []byte(value), nil
 }

@@ -48,7 +48,7 @@ const (
 	userPages = 256
 )
 
-var errNoSession = errors.New("no session key since the service started: take a fresh pubkey")
+var errNoSession = errors.New("no session key since the service started, take a fresh pubkey")
 
 type space struct {
 	pub     *[32]byte
@@ -98,7 +98,7 @@ func (sp *space) lock(value []byte) (*locked, error) {
 	if err == nil {
 		if err = unix.Mlock(pages); err != nil {
 			unix.Munmap(pages)
-			err = fmt.Errorf("lock a secret in memory: %w", err)
+			err = fmt.Errorf("cannot lock the secret in memory (%w)", err)
 		}
 	}
 	if err != nil {
@@ -160,7 +160,7 @@ func (st store) check() error {
 			return err
 		}
 		if info.Mode&unix.S_IFMT != unix.S_IFDIR || info.Uid != uint32(os.Geteuid()) || info.Mode&0o022 != 0 {
-			return fmt.Errorf("%s is not a store directory", dir)
+			return fmt.Errorf("not a store directory %q", dir)
 		}
 	}
 	return nil
@@ -204,7 +204,7 @@ func (st store) unsealKey() (salt, pub *[32]byte, err error) {
 		pub, ok = parseKey(fields[1])
 	}
 	if !ok {
-		return nil, nil, fmt.Errorf("%s: not a picoseal unseal file", st.unsealPath())
+		return nil, nil, fmt.Errorf("not a picoseal unseal file %q", st.unsealPath())
 	}
 	return salt, pub, nil
 }
@@ -404,7 +404,7 @@ func parse(args []string) (user bool, command, name string, err error) {
 	}
 	command, args = args[0], args[1:]
 	if user && (command == "save" || command == "init" || command == "unseal" || command == "seal") {
-		return false, "", "", errors.New("a user's space has no store: use add")
+		return false, "", "", errors.New("no store for a user, use add")
 	}
 	switch command {
 	case "add", "save", "open", "remove":
@@ -468,9 +468,9 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 		if sp.priv == nil {
 			return nil, errNoSession
 		}
-		value, err := openBox(payload, "", sp.pub, (*[32]byte)(sp.priv.value()))
+		value, err := openBox(payload, sp.pub, (*[32]byte)(sp.priv.value()))
 		if errors.Is(err, errOther) {
-			err = fmt.Errorf("%w: it was made for another pubkey, one from before the service restarted or from another space", err)
+			err = errors.New("CryptoBox for another pubkey, from before the service restarted or for another space")
 		}
 		return value, err
 	case "add", "save":
@@ -480,9 +480,9 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 			return bytes.Clone(value.value()), nil
 		}
 		if st.holds(name) {
-			return nil, fmt.Errorf("%s: sealed, run picoseal unseal", name)
+			return nil, fmt.Errorf("unseal is needed for %q", name)
 		}
-		return nil, fmt.Errorf("%s: no such secret", name)
+		return nil, fmt.Errorf("no such secret %q", name)
 	case "list":
 		return sp.list(st)
 	case "remove":
@@ -501,7 +501,7 @@ func (sp *space) add(st *store, name string, value []byte, memoryOnly bool) erro
 		return errors.New("empty secret")
 	}
 	if _, ok := sp.secrets[name]; ok || st.holds(name) {
-		return fmt.Errorf("%s: already exists", name)
+		return fmt.Errorf("already exists %q", name)
 	}
 	var unsealPub *[32]byte
 	if !memoryOnly {
@@ -510,7 +510,7 @@ func (sp *space) add(st *store, name string, value []byte, memoryOnly bool) erro
 			return err
 		}
 		if unsealPub == nil {
-			return errors.New("no store: run picoseal init, or add for memory only")
+			return errors.New("no store, run picoseal init or use add for memory only")
 		}
 	}
 	held, err := sp.lock(value)
@@ -524,7 +524,7 @@ func (sp *space) add(st *store, name string, value []byte, memoryOnly bool) erro
 		}
 		if err != nil {
 			sp.free(held)
-			return fmt.Errorf("%s not stored: %w", name, err)
+			return fmt.Errorf("not stored (%w) %q", err, name)
 		}
 	}
 	sp.secrets[name] = held
@@ -578,7 +578,7 @@ func (sp *space) remove(st *store, name string) error {
 		delete(sp.secrets, name)
 	}
 	if !found && !onDisk {
-		return fmt.Errorf("%s: no such secret", name)
+		return fmt.Errorf("no such secret %q", name)
 	}
 	return nil
 }
@@ -607,7 +607,7 @@ func (sp *space) unseal(st *store, password []byte, init bool) error {
 	case init && unsealPub != nil:
 		return errors.New("the store is already set up")
 	case !init && unsealPub == nil:
-		return errors.New("no store: run picoseal init")
+		return errors.New("no store, run picoseal init")
 	case init:
 		if err := st.makeDirs(); err != nil {
 			return err
@@ -644,7 +644,7 @@ func (sp *space) unseal(st *store, password []byte, init bool) error {
 		data, err := readFile(st.secretPath(name))
 		if err == nil {
 			var value []byte
-			if value, err = openBox(data, st.secretPath(name), pub, priv); err == nil {
+			if value, err = openBox(data, pub, priv); err == nil {
 				var held *locked
 				if held, err = sp.lock(value); err == nil {
 					sp.secrets[name] = held
@@ -653,7 +653,7 @@ func (sp *space) unseal(st *store, password []byte, init bool) error {
 			}
 		}
 		if err != nil {
-			failed = append(failed, err)
+			failed = append(failed, fmt.Errorf("%w %q", err, name))
 		}
 	}
 	return errors.Join(failed...)

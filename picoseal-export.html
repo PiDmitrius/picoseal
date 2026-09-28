@@ -21,8 +21,8 @@ button { margin-top: .75rem; padding: .4rem 1rem; font: inherit; }
 </head>
 <body>
 <h1>picoseal</h1>
-<p>Puts a secret in a cryptobox for one picoseal session, as <code>picoseal export</code>
-does. Everything happens in this page; the host opens the cryptobox with
+<p>Puts a secret in a CryptoBox for one picoseal session, as <code>picoseal export</code>
+does. Everything happens in this page; the host opens the CryptoBox with
 <code>picoseal import</code>.</p>
 <label for="pubkey">Public key</label>
 <input id="pubkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="output of picoseal pubkey">
@@ -30,7 +30,7 @@ does. Everything happens in this page; the host opens the cryptobox with
 <textarea id="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
 <button id="export">Export and copy</button>
 <p id="status"></p>
-<label for="cryptobox">Cryptobox</label>
+<label for="cryptobox">CryptoBox</label>
 <textarea id="cryptobox" readonly></textarea>
 <button id="copy" disabled>Copy again</button>
 <script>
@@ -121,11 +121,11 @@ if (typeof document !== "undefined") {
       try {
         await navigator.clipboard.writeText($("cryptobox").value);
       } catch {
-        say("The cryptobox is not copied, and the clipboard may still hold the secret: copy the cryptobox below before pasting anywhere.", false);
+        say("The CryptoBox is not copied, and the clipboard may still hold the secret: copy the CryptoBox below before pasting anywhere.", false);
         return;
       }
     }
-    say("The cryptobox is copied and the clipboard no longer holds the secret: paste it in the chat.", true);
+    say("The CryptoBox is copied and the clipboard no longer holds the secret: paste it in the chat.", true);
   };
   $("export").onclick = async () => {
     say("", true);
