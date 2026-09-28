@@ -101,8 +101,8 @@ only the service reads. `init` sets the password, asking it twice on a terminal
 and once from a pipe, and writes to the store the secrets already in memory;
 from then on `add` also writes every secret there. After the service restarts
 or `seal`, one `unseal` loads them all again, and stores any secret `init`
-could not. The store keeps only the password's salt and a public key Argon2id
-derives from them, so a copy of the disk opens nothing without the password.
+could not. Of the password the store keeps only its salt and a public key
+Argon2id derives from them, so a copy of the disk opens nothing without it.
 `init` and `unseal` need about 1 GiB of memory for a moment, and so does every
 guess at the password.
 

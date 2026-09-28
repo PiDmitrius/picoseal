@@ -564,3 +564,23 @@ func TestWriteNewKeepsWhatIsThere(t *testing.T) {
 		t.Fatalf("got %q and %d entries", data, len(entries))
 	}
 }
+
+func TestMalformedUnsealFileIsKept(t *testing.T) {
+	service(t)
+	st := userStore()
+	if err := st.makeDirs(); err != nil {
+		t.Fatal(err)
+	}
+	bad := encodeKey(new([32]byte))
+	if err := os.WriteFile(st.unsealPath(), []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"init", "unseal"} {
+		if err := unseal(t, command, "pass"); err == nil || !strings.Contains(err.Error(), "not a picoseal unseal file") {
+			t.Fatalf("%s: got %v", command, err)
+		}
+	}
+	if data, _ := os.ReadFile(st.unsealPath()); string(data) != bad {
+		t.Fatal("a malformed unseal file must stay as it is")
+	}
+}
