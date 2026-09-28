@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -145,13 +144,12 @@ func newServer() *server {
 	return &server{spaces: map[int]*space{}, active: map[int]int{}, users: usersBudget()}
 }
 
-// store is a space's directory: key salts the password, unseal holds the
+// store is a space's directory: unseal holds the password's salt and the
 // public U, secrets/ holds a cryptobox for U per name. The service trusts it
 // only as a root-owned directory nobody else may write, and follows no
 // symbolic link inside it.
 type store struct{ dir string }
 
-func (st store) keyPath() string    { return filepath.Join(st.dir, "key") }
 func (st store) unsealPath() string { return filepath.Join(st.dir, "unseal") }
 func (st store) secretsDir() string { return filepath.Join(st.dir, "secrets") }
 func (st store) secretPath(name string) string {
@@ -189,23 +187,31 @@ func readFile(path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, 2*maxBox))
 }
 
-// unsealKey returns the public U of a store init has set up, or nil.
-func (st store) unsealKey() (*[32]byte, error) {
+// unsealKey returns the salt and the public U of a store init has set up, or
+// nils.
+func (st store) unsealKey() (salt, pub *[32]byte, err error) {
 	data, err := readFile(st.unsealPath())
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	key, ok := parseKey(string(data))
+	fields := strings.Fields(string(data))
+	ok := len(fields) == 2
+	if ok {
+		salt, ok = parseKey(fields[0])
+	}
+	if ok {
+		pub, ok = parseKey(fields[1])
+	}
 	if !ok {
-		return nil, fmt.Errorf("%s: not a picoseal key", st.unsealPath())
+		return nil, nil, fmt.Errorf("%s: not a picoseal unseal file", st.unsealPath())
 	}
-	return key, nil
+	return salt, pub, nil
 }
 
-func (st store) ensureKey() error {
+func (st store) makeDirs() error {
 	if err := st.check(); err != nil {
 		return err
 	}
@@ -214,17 +220,7 @@ func (st store) ensureKey() error {
 			return err
 		}
 	}
-	if err := st.check(); err != nil {
-		return err
-	}
-	_, secret, err := box.GenerateKey(rand.Reader)
-	if err != nil {
-		return err
-	}
-	if err = writeNew(st.keyPath(), encodeKey(secret)); errors.Is(err, os.ErrExist) {
-		return nil
-	}
-	return err
+	return st.check()
 }
 
 func cmdServe(args []string) error {
@@ -493,7 +489,7 @@ func (sp *space) add(st store, name string, value []byte) error {
 	if _, err := os.Lstat(st.secretPath(name)); err == nil {
 		return fmt.Errorf("%s already exists", name)
 	}
-	unsealPub, err := st.unsealKey()
+	_, unsealPub, err := st.unsealKey()
 	if err != nil {
 		return err
 	}
@@ -569,7 +565,7 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 	if len(password) == 0 {
 		return errors.New("empty password")
 	}
-	unsealPub, err := st.unsealKey()
+	salt, unsealPub, err := st.unsealKey()
 	if err != nil {
 		return err
 	}
@@ -578,27 +574,24 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 		return errors.New("the store exists")
 	case !init && unsealPub == nil:
 		return errors.New("no store: run picoseal init")
-	}
-	if err := st.ensureKey(); err != nil {
-		return err
-	}
-	data, err := readFile(st.keyPath())
-	if err != nil {
-		return err
-	}
-	key, ok := parseKey(string(data))
-	if !ok {
-		return fmt.Errorf("%s: not a picoseal key", st.keyPath())
+	case init:
+		if err := st.makeDirs(); err != nil {
+			return err
+		}
+		salt = new([32]byte)
+		if _, err := rand.Read(salt[:]); err != nil {
+			return err
+		}
 	}
 	derive.Lock()
-	pub, priv, err := deriveU(key, password)
+	pub, priv, err := deriveU(salt, password)
 	derive.Unlock()
 	if err != nil {
 		return err
 	}
 	defer clear(priv[:])
 	if init {
-		if err := writeNew(st.unsealPath(), encodeKey(pub)); err != nil {
+		if err := writeNew(st.unsealPath(), strings.TrimSpace(encodeKey(salt))+" "+encodeKey(pub)); err != nil {
 			return err
 		}
 	} else if *pub != *unsealPub {
@@ -646,9 +639,9 @@ func (sp *space) unseal(st store, password []byte, init bool, derive *sync.Mutex
 
 // deriveU runs Argon2id in a child of the service's own binary, outside the
 // service's memory.
-var deriveU = func(key *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
+var deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
 	child := exec.Command("/proc/self/exe", "derive", strconv.Itoa(int(argonMemory)))
-	input := append(saltFor(key), password...)
+	input := append(bytes.Clone(salt[:]), password...)
 	defer clear(input)
 	child.Stdin = bytes.NewReader(input)
 	var stderr bytes.Buffer
@@ -665,11 +658,6 @@ var deriveU = func(key *[32]byte, password []byte) (pub, priv *[32]byte, err err
 	priv = new([32]byte)
 	copy(priv[:], out)
 	return publicKey(priv), priv, nil
-}
-
-func saltFor(key *[32]byte) []byte {
-	salt := sha256.Sum256(append([]byte("picoseal unseal\x00"), key[:]...))
-	return salt[:]
 }
 
 // cmdDerive reads a 32-byte salt and a password and prints U.

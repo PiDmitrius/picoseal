@@ -26,9 +26,9 @@ func service(t *testing.T) string {
 		t.Fatal(err)
 	}
 	base, sockPath, asUser = dir, filepath.Join(dir, "sock"), true
-	deriveU = func(key *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
+	deriveU = func(salt *[32]byte, password []byte) (pub, priv *[32]byte, err error) {
 		priv = new([32]byte)
-		copy(priv[:], argon2.IDKey(password, saltFor(key), 1, 64, 1, 32))
+		copy(priv[:], argon2.IDKey(password, salt[:], 1, 64, 1, 32))
 		return publicKey(priv), priv, nil
 	}
 	listener, err := net.Listen("unix", sockPath)
@@ -221,6 +221,9 @@ func TestStoreReloadsOnUnseal(t *testing.T) {
 	if err := unseal(t, "init", "pass\n"); err != nil {
 		t.Fatal(err)
 	}
+	if salt, pub, err := userStore().unsealKey(); err != nil || salt == nil || pub == nil {
+		t.Fatalf("init must write the salt and U, got %v", err)
+	}
 	if err := unseal(t, "init", "other"); err == nil || !strings.Contains(err.Error(), "exists") {
 		t.Fatalf("init must refuse an existing store, got %v", err)
 	}
@@ -262,7 +265,7 @@ func TestInitStoresMemoryAndSkipsBadCryptoboxes(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := userStore()
-	if err := st.ensureKey(); err != nil {
+	if err := st.makeDirs(); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(st.secretPath("junk"), []byte("junk\n"), 0o600); err != nil {
