@@ -47,8 +47,8 @@ waits for `unseal`:
     + gitlab  (unsealed)
     + temp    (memory)
 
-`add`, `save` and `open` keep secrets; `export` and `import` make and open
-cryptoboxes without keeping anything.
+`add` and `save` keep secrets and `open` prints them; `export` and `import` make
+and open cryptoboxes without keeping anything.
 
 Every command but `export` works as root, in root's space, and refuses any other
 user. `--user` works as the calling user, in that user's own space, which lives

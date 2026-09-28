@@ -89,7 +89,7 @@ function blake2b(input, outlen) {
 // one trailing newline, as one line of unpadded base64url.
 function makeCryptobox(pubkey, text) {
   pubkey = pubkey.trim();
-  if (!/^[A-Za-z0-9_-]{43}$/.test(pubkey)) throw new Error("not a picoseal public key");
+  if (!/^[A-Za-z0-9_-]{43}$/.test(pubkey)) throw new Error("not a pubkey");
   const pk = Uint8Array.from(atob(pubkey.replace(/-/g, "+").replace(/_/g, "/") + "="), c => c.charCodeAt(0));
   if (new TextEncoder().encode(text).length > 65536) throw new Error("secret exceeds 65536 bytes");
   const message = new TextEncoder().encode(text.replace(/\n$/, ""));

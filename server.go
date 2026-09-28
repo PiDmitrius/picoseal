@@ -468,11 +468,7 @@ func (s *server) do(uid int, user bool, command, name string, payload []byte) ([
 		if sp.priv == nil {
 			return nil, errNoSession
 		}
-		value, err := openBox(payload, sp.pub, (*[32]byte)(sp.priv.value()))
-		if errors.Is(err, errOther) {
-			err = errors.New("cryptobox for another pubkey")
-		}
-		return value, err
+		return openBox(payload, sp.pub, (*[32]byte)(sp.priv.value()))
 	case "add", "save":
 		return nil, sp.add(st, name, payload, command == "add")
 	case "open":

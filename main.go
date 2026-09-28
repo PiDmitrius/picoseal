@@ -45,7 +45,6 @@ const (
 var (
 	base        = "/etc/picoseal"
 	sockPath    = "/run/picoseal.sock"
-	asUser      bool
 	nameRe      = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 	errUsage    = errors.New("usage")
 	errRoot     = errors.New("needs root")
@@ -57,11 +56,11 @@ var (
 func main() {
 	unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0)
 	args := os.Args[1:]
-	flags := 0
-	for flags < len(args) && strings.HasPrefix(args[flags], "--") {
-		flags++
+	at := 0
+	if len(args) > 0 && args[0] == "--user" {
+		at = 1
 	}
-	if flags == len(args) {
+	if at == len(args) || strings.HasPrefix(args[at], "-") {
 		usage()
 		os.Exit(1)
 	}
@@ -70,20 +69,15 @@ func main() {
 		"install": cmdInstall,
 		"serve":   cmdServe,
 		"export":  cmdExport,
-	}[args[flags]]; ok {
-		for _, flag := range args[:flags] {
-			if flag != "--user" {
-				usage()
-				os.Exit(1)
-			}
-			asUser = true
-		}
-		err = local(args[flags+1:])
+	}[args[at]]; ok && at == 0 {
+		err = local(args[1:])
+	} else if ok {
+		err = errUsage
 	} else {
-		err = remote(args, args[flags])
+		err = remote(args, args[at])
 	}
 	if err != nil && err.Error() == errUnknown.Error() {
-		fmt.Fprintf(os.Stderr, "picoseal: unknown command %q\n\n", args[flags])
+		fmt.Fprintf(os.Stderr, "picoseal: unknown command %q\n\n", args[at])
 		err = errUsage
 	}
 	if err != nil && err.Error() == errUsage.Error() {
@@ -128,8 +122,8 @@ memory, and unseal reloads them.
   --user           Use the caller's own space, in memory only, instead of
                    root's
 
-Every command but export works as root, or with --user as the caller. Only root
-reaches root's secrets.
+Every command but export needs root; --user takes the caller's own space
+instead, in memory only. Only root reaches root's secrets.
 `, binPath, maxTerminal, maxValue)
 }
 
@@ -175,9 +169,6 @@ func openBox(data []byte, pub, priv *[32]byte) ([]byte, error) {
 }
 
 func asRoot() error {
-	if asUser {
-		return errRootUser
-	}
 	if os.Geteuid() != 0 {
 		return errRoot
 	}
@@ -393,7 +384,7 @@ func readSecret(prompt string, limit int) ([]byte, error) {
 	}
 	line = strings.TrimRight(line, "\r\n")
 	if len(line) >= maxTerminal {
-		return nil, fmt.Errorf("a terminal line takes under %d bytes, pipe it", maxTerminal)
+		return nil, fmt.Errorf("terminal line exceeds %d bytes", maxTerminal-1)
 	}
 	return nonEmpty(prompt, line)
 }

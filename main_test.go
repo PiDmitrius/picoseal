@@ -26,7 +26,7 @@ func service(t *testing.T) (string, *server) {
 // userService runs the test as a user of the service rather than its root.
 func userService(t *testing.T) (string, *server) {
 	t.Helper()
-	return serviceFor(t, 0)
+	return serviceFor(t, os.Getuid()+1)
 }
 
 func serviceFor(t *testing.T, root int) (string, *server) {
@@ -398,7 +398,7 @@ func TestImportRefusesJunkAndOtherKeys(t *testing.T) {
 	}
 	service(t)
 	pubkey(t)
-	if _, err := importBox(t, cryptobox); err == nil || err.Error() != "cryptobox for another pubkey" {
+	if _, err := importBox(t, cryptobox); err == nil || err.Error() != "cryptobox for another key" {
 		t.Fatalf("a cryptobox for another key must be refused, got %v", err)
 	}
 }
@@ -556,7 +556,7 @@ func TestNamesAreCheckedBeforeTheyReachTheService(t *testing.T) {
 	}
 }
 
-func TestAddRefusesANameSealedOnDisk(t *testing.T) {
+func TestSaveRefusesANameSealedOnDisk(t *testing.T) {
 	service(t)
 	if err := unseal(t, "init", "pass"); err != nil {
 		t.Fatal(err)
@@ -687,7 +687,7 @@ func TestStoreNeedsNoDirectoryUntilInit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := save(t, "kept", "value"); err == nil {
-		t.Fatal("add without a store must fail")
+		t.Fatal("save without a store must fail")
 	}
 	if _, err := os.Stat(base); !os.IsNotExist(err) {
 		t.Fatal("memory only must create nothing")
@@ -708,6 +708,9 @@ func TestStoreNeedsNoDirectoryUntilInit(t *testing.T) {
 }
 
 func TestFailedRemoveKeepsTheSecret(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a read-only directory")
+	}
 	service(t)
 	if err := unseal(t, "init", "pass"); err != nil {
 		t.Fatal(err)
