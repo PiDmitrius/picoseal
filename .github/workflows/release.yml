@@ -32,7 +32,7 @@ jobs:
             GOARCH=$arch go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
               -o release/picoseal-${{ github.ref_name }}-linux-$arch .
           done
-          cp picoseal-export.html release/
+          cp picoseal-export.html picoseal-import.html release/
 
       - name: Publish
         uses: softprops/action-gh-release@v2
