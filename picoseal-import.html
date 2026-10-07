@@ -5,7 +5,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Picoseal · Export</title>
+<title>Picoseal · Import</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%2215%22%20fill%3D%22%238b1e2d%22/%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%2211%22%20fill%3D%22none%22%20stroke%3D%22%23e8c7a0%22%20stroke-width%3D%221.5%22/%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2213.5%22%20r%3D%223%22%20fill%3D%22%23e8c7a0%22/%3E%3Cpath%20d%3D%22M14.6%2015.5h2.8l1%206h-4.8z%22%20fill%3D%22%23e8c7a0%22/%3E%3C/svg%3E">
 <style>
 body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 2.5rem 1rem; color: #222; background: #e4dfd6; }
@@ -27,27 +27,32 @@ input.copied, textarea.copied { background: #e2e2e2; }
 .field button:disabled { opacity: .25; cursor: default; }
 .field .regenerate { right: 2.5rem; }
 .field .copy { right: .25rem; }
+#pubkey { padding-right: 5rem; }
+#secret { padding-right: 2.75rem; }
 #status { min-height: 1.5em; margin: .75rem 0 0; font-weight: 600; color: #a00; }
-#cryptobox { padding-right: 5rem; word-break: break-all; }
+#pubkey, #cryptobox { word-break: break-all; }
 </style>
 </head>
 <body>
 <main>
 <header>
 <svg class="seal" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#8b1e2d"/><circle cx="16" cy="16" r="11" fill="none" stroke="#e8c7a0" stroke-width="1.5"/><circle cx="16" cy="13.5" r="3" fill="#e8c7a0"/><path d="M14.6 15.5h2.8l1 6h-4.8z" fill="#e8c7a0"/></svg>
-<h1>Picoseal · Export</h1>
+<h1>Picoseal · Import</h1>
 </header>
 <section>
 <label for="pubkey">PubKey</label>
-<input id="pubkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-<label for="secret">Secret</label>
-<textarea id="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
-<label for="cryptobox">CryptoBox</label>
 <div class="field">
-<textarea id="cryptobox" readonly></textarea>
-<button id="regenerate" class="regenerate" title="New cryptobox" aria-label="New cryptobox" disabled><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M8 16H3v5"/></svg></button>
-<button id="copy" class="copy" title="Copy" aria-label="Copy" disabled>⧉</button>
+<input id="pubkey" readonly>
+<button id="regenerate" class="regenerate" title="New key" aria-label="New key"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M8 16H3v5"/></svg></button>
+<button id="copykey" class="copy" title="Copy" aria-label="Copy">⧉</button>
 </div>
+<label for="secret">Secret</label>
+<div class="field">
+<textarea id="secret" readonly></textarea>
+<button id="copysecret" class="copy" title="Copy" aria-label="Copy" disabled>⧉</button>
+</div>
+<label for="cryptobox">CryptoBox</label>
+<textarea id="cryptobox" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
 <p id="status"></p>
 </section>
 </main>
@@ -103,38 +108,11 @@ function blake2b(input, outlen) {
   return out;
 }
 
-// makeCryptobox matches picoseal export: crypto_box_seal of the text without
-// one trailing newline, padded with 0x80 and zeros to a whole 64-byte block, as
-// one line of lowercase unpadded base32.
+// openCryptobox matches picoseal import: crypto_box_seal_open of one line of
+// base32 for the key pair, without the 0x80 and zeros padding.
 const base32 = "abcdefghijklmnopqrstuvwxyz234567";
-function makeCryptobox(pubkey, text) {
-  pubkey = pubkey.trim().toLowerCase();
-  if (!/^[a-z2-7]{52}$/.test(pubkey)) throw new Error("not a pubkey");
-  const pk = new Uint8Array(32);
-  for (let i = 0, bits = 0, value = 0, n = 0; i < pubkey.length; i++) {
-    value = (value << 5 | base32.indexOf(pubkey[i])) & 0xfff;
-    bits += 5;
-    if (bits >= 8) pk[n++] = value >> (bits -= 8) & 0xff;
-  }
-  if (new TextEncoder().encode(text).length > 65536) throw new Error("secret exceeds 65536 bytes");
-  const message = new TextEncoder().encode(text.replace(/\n$/, ""));
-  if (message.length === 0) throw new Error("empty secret");
-  const padded = new Uint8Array((Math.floor(message.length / 64) + 1) * 64);
-  padded.set(message);
-  padded[message.length] = 0x80;
-  message.fill(0);
-  const ephemeral = nacl.box.keyPair();
-  const nonce = new Uint8Array(64);
-  nonce.set(ephemeral.publicKey);
-  nonce.set(pk, 32);
-  const box = nacl.box(padded, blake2b(nonce, 24), pk, ephemeral.secretKey);
-  ephemeral.secretKey.fill(0);
-  padded.fill(0);
-  const raw = new Uint8Array(32 + box.length);
-  raw.set(ephemeral.publicKey);
-  raw.set(box, 32);
-  let out = "";
-  let bits = 0, value = 0;
+function encodeBase32(raw) {
+  let out = "", bits = 0, value = 0;
   for (const byte of raw) {
     value = (value << 8 | byte) & 0xfff;
     for (bits += 8; bits >= 5; bits -= 5) out += base32[value >> (bits - 5) & 31];
@@ -142,11 +120,37 @@ function makeCryptobox(pubkey, text) {
   if (bits > 0) out += base32[value << (5 - bits) & 31];
   return out;
 }
+function openCryptobox(keys, text) {
+  text = text.trim().replace(/[\r\n]/g, "").toLowerCase();
+  if (!/^[a-z2-7]*$/.test(text)) throw new Error("not a cryptobox");
+  const raw = new Uint8Array(Math.floor(text.length * 5 / 8));
+  for (let i = 0, bits = 0, value = 0, n = 0; i < text.length; i++) {
+    value = (value << 5 | base32.indexOf(text[i])) & 0xfff;
+    bits += 5;
+    if (bits >= 8) raw[n++] = value >> (bits -= 8) & 0xff;
+  }
+  if (raw.length <= 48) throw new Error("not a cryptobox");
+  const ephemeral = raw.subarray(0, 32);
+  const nonce = new Uint8Array(64);
+  nonce.set(ephemeral);
+  nonce.set(keys.publicKey, 32);
+  const value = nacl.box.open(raw.subarray(32), blake2b(nonce, 24), ephemeral, keys.secretKey);
+  if (!value) throw new Error("cryptobox for another key");
+  let end = value.length - 1;
+  while (end >= 0 && value[end] === 0) end--;
+  if (end < 0 || value[end] !== 0x80 || value.length % 64 !== 0) {
+    value.fill(0);
+    throw new Error("not a cryptobox");
+  }
+  const secret = new TextDecoder("utf-8", { ignoreBOM: true }).decode(value.subarray(0, end));
+  value.fill(0);
+  return secret;
+}
 
 if (typeof document !== "undefined") {
   const $ = id => document.getElementById(id);
   const fail = text => $("status").textContent = text && "Error: " + text;
-  let shown;
+  let keys, shown;
   // copyText writes the clipboard without moving the focus: a page over plain
   // http has no clipboard API, so it copies from a hidden field and gives the
   // focus back.
@@ -167,36 +171,38 @@ if (typeof document !== "undefined") {
       return ok;
     }
   };
-  const copy = async () => {
-    if (!await copyText($("cryptobox").value)) return fail("not copied");
-    clearTimeout(shown);
-    $("cryptobox").classList.add("copied");
-    shown = setTimeout(() => $("cryptobox").classList.remove("copied"), 1000);
-  };
   const update = () => {
     fail("");
-    $("cryptobox").value = "";
-    $("copy").disabled = $("regenerate").disabled = true;
-    if (!$("pubkey").value.trim() || !$("secret").value) return;
+    $("secret").value = "";
+    $("copysecret").disabled = true;
+    if (!$("cryptobox").value.trim()) return;
     try {
-      $("cryptobox").value = makeCryptobox($("pubkey").value, $("secret").value);
-      $("copy").disabled = $("regenerate").disabled = false;
+      $("secret").value = openCryptobox(keys, $("cryptobox").value);
+      $("copysecret").disabled = false;
     } catch (e) {
       fail(e.message);
     }
   };
-  $("pubkey").oninput = update;
-  $("secret").oninput = update;
-  $("copy").onmousedown = $("regenerate").onmousedown = e => e.preventDefault();
-  $("copy").onclick = copy;
-  $("regenerate").onclick = update;
-  const fromLink = () => {
-    const key = location.hash.slice(1);
-    if (key) $("pubkey").value = key;
+  const copyField = async field => {
+    if (!await copyText(field.value)) return fail("not copied");
+    clearTimeout(shown);
+    document.querySelector(".copied")?.classList.remove("copied");
+    field.classList.add("copied");
+    shown = setTimeout(() => field.classList.remove("copied"), 1000);
+  };
+  const regenerate = () => {
+    keys?.secretKey.fill(0);
+    keys = nacl.box.keyPair();
+    $("pubkey").value = encodeBase32(keys.publicKey);
+    $("cryptobox").value = "";
     update();
   };
-  window.onhashchange = fromLink;
-  fromLink();
+  $("cryptobox").oninput = update;
+  for (const button of document.querySelectorAll("button")) button.onmousedown = e => e.preventDefault();
+  $("regenerate").onclick = regenerate;
+  $("copykey").onclick = () => copyField($("pubkey"));
+  $("copysecret").onclick = () => copyField($("secret"));
+  regenerate();
 }
 </script>
 </body>

@@ -106,9 +106,18 @@ piped to hold working copies in ordinary memory while they run.
 
 `picoseal-export.html` does what `export` does in a browser, offline and
 self-contained: paste the public key and the secret, and the cryptobox follows
-as you type; Copy puts it in the clipboard in place of the secret. Open it as a
-local file or from a server you trust over https; a page served over plain http
-from elsewhere can be rewritten on the way.
+as you type; the buttons by it copy it, in place of the secret, and make a fresh
+one of the same secret. A link `picoseal-export.html#<pubkey>` opens the page
+with the key in place.
+
+`picoseal-import.html` is its pair for passing a secret between people, such as
+in a chat: it makes a key of its own, kept only in the page, and shows its
+public key with buttons to copy it and to make a new one; reloading the page
+also makes a new one, and older cryptoboxes no longer open. The cryptobox pasted
+from `picoseal-export.html` opens into the secret, with a button to copy it.
+
+Open either page as a local file or from a server you trust over https; a page
+served over plain http from elsewhere can be rewritten on the way.
 
 The session key changes every time the service starts, so take a fresh `pubkey`
 over a channel that authenticates the host, such as ssh; a key swapped on the
